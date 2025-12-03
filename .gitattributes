@@ -1,0 +1,2 @@
+Sources/HelloWorldApp/Resources/vminitd filter=lfs diff=lfs merge=lfs -text
+Sources/HelloWorldApp/Resources/vmexec filter=lfs diff=lfs merge=lfs -text

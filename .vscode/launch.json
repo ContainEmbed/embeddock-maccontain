@@ -1,0 +1,73 @@
+{
+    "configurations": [
+        {
+            "type": "lldb-dap",
+            "request": "launch",
+            "name": "Build, Sign & Run",
+            "program": "${workspaceFolder}/.build/arm64-apple-macosx/debug/HelloWorldApp",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "Build and Sign HelloWorldApp"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:embeddock-maccontain}",
+            "name": "Debug HelloWorldApp",
+            "target": "HelloWorldApp",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug HelloWorldApp"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:embeddock-maccontain}",
+            "name": "Release HelloWorldApp",
+            "target": "HelloWorldApp",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release HelloWorldApp"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:embeddock-maccontain}",
+            "name": "Debug cctl",
+            "target": "cctl",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug cctl"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:embeddock-maccontain}",
+            "name": "Release cctl",
+            "target": "cctl",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release cctl"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:embeddock-maccontain}",
+            "name": "Debug containerization-integration",
+            "target": "containerization-integration",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug containerization-integration"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:embeddock-maccontain}",
+            "name": "Release containerization-integration",
+            "target": "containerization-integration",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release containerization-integration"
+        }
+    ]
+}

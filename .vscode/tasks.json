@@ -1,0 +1,15 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build and Sign HelloWorldApp",
+            "type": "shell",
+            "command": "swift build && codesign --force --sign - --entitlements signing/vz.entitlements .build/arm64-apple-macosx/debug/HelloWorldApp",
+            "problemMatcher": [],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        }
+    ]
+}
