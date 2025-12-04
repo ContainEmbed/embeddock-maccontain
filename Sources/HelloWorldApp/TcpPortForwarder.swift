@@ -17,6 +17,7 @@
 import Foundation
 import Containerization
 import ContainerizationError
+import ContainerizationExtras
 import Logging
 import Network
 
@@ -501,33 +502,46 @@ class TcpPortForwarder: ObservableObject {
         }
     }
     
-    /// Stop port forwarding
+    /// Stop port forwarding with robust timeout handling
     func stop() async {
         logger.info("🛑 [TcpPortForwarder] Stopping port forwarding")
-        await cleanup()
+        
+        // Immediately mark as inactive to prevent new connections
         status = .inactive
+        
+        await cleanup()
+        
         logger.info("✅ [TcpPortForwarder] Port forwarding stopped")
     }
     
     private func cleanup() async {
-        // Cancel all connection tasks
+        // Phase 1: Cancel all connection tasks (immediate, non-blocking)
         for (_, task) in connectionTasks {
             task.cancel()
         }
         connectionTasks.removeAll()
         
-        // Close all active connections
+        // Phase 2: Close all active connections (immediate, synchronous)
         for (_, relay) in activeConnections {
             relay.close()
         }
         activeConnections.removeAll()
         
-        // Stop listener
+        // Phase 3: Stop listener (immediate)
         listener?.cancel()
         listener = nil
         
-        // Stop guest bridge
-        await guestBridge?.stopBridge()
+        // Phase 4: Stop guest bridge with 3 second timeout
+        if let bridge = guestBridge {
+            do {
+                try await Timeout.run(seconds: 3) {
+                    await bridge.stopBridge()
+                }
+                logger.debug("✅ [TcpPortForwarder] Guest bridge stopped")
+            } catch {
+                logger.warning("⚠️ [TcpPortForwarder] Guest bridge stop timed out")
+            }
+        }
         guestBridge = nil
     }
     
