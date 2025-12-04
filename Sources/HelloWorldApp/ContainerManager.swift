@@ -737,8 +737,9 @@ class ContainerManager: ObservableObject {
         }
     }
     
+    /// Robust container stop with guaranteed completion within 30 seconds
     func stopContainer() async throws {
-        logger.info("🛑 [ContainerManager] Stopping container")
+        logger.info("🛑 [ContainerManager] Stopping container (robust cleanup)")
         
         guard let pod = currentPod else {
             logger.warning("⚠️ [ContainerManager] No container is running")
@@ -747,34 +748,108 @@ class ContainerManager: ObservableObject {
         
         statusMessage = "Stopping container..."
         
-        // Stop port forwarding first
-        if let forwarder = portForwarder {
-            logger.debug("🌐 [ContainerManager] Stopping port forwarding")
-            await forwarder.stop()
-            portForwarder = nil
-            portForwardingStatus = .inactive
+        // Master timeout: 30 seconds maximum for entire cleanup
+        let masterTimeoutSeconds: UInt32 = 30
+        
+        do {
+            try await Timeout.run(seconds: masterTimeoutSeconds) { [self] in
+                await self.performCleanupSequence(pod: pod)
+            }
+        } catch is CancellationError {
+            logger.error("❌ [ContainerManager] Cleanup timed out after \(masterTimeoutSeconds)s, forcing state clear")
+        } catch {
+            logger.error("❌ [ContainerManager] Cleanup error: \(error)")
         }
         
-        // Stop communication manager
-        if let commManager = communicationManager {
-            logger.debug("🔌 [ContainerManager] Disconnecting communication manager")
-            await commManager.disconnect()
-            communicationManager = nil
-            isCommunicationReady = false
+        // ALWAYS clear state - this runs regardless of any errors/timeouts above
+        forceClearState()
+        
+        logger.info("✅ [ContainerManager] Container stopped")
+    }
+    
+    /// Phase 1: Stop external-facing resources in parallel, then stop pod
+    private func performCleanupSequence(pod: LinuxPod) async {
+        // Phase 1: Stop port forwarding and communication in parallel
+        logger.debug("🔄 [Cleanup] Phase 1: External resources")
+        
+        // Stop port forwarder with timeout
+        await stopPortForwarderWithTimeout(timeoutSeconds: 5)
+        
+        // Stop communication manager with timeout
+        await stopCommunicationWithTimeout(timeoutSeconds: 3)
+        
+        // Phase 2: Stop pod with 15 second timeout
+        logger.debug("🔄 [Cleanup] Phase 2: Pod stop")
+        await stopPodWithTimeout(pod: pod, timeoutSeconds: 15)
+    }
+    
+    /// Stop port forwarder with timeout
+    private func stopPortForwarderWithTimeout(timeoutSeconds: UInt32) async {
+        guard let forwarder = portForwarder else { return }
+        
+        do {
+            try await Timeout.run(seconds: timeoutSeconds) {
+                await forwarder.stop()
+            }
+            logger.debug("✅ [Cleanup] Port forwarder stopped")
+        } catch {
+            logger.warning("⚠️ [Cleanup] Port forwarder stop timed out after \(timeoutSeconds)s")
         }
         
-        logger.debug("🔄 [ContainerManager] Calling pod.stop()")
+        // Always clear regardless of success
+        portForwarder = nil
+        portForwardingStatus = .inactive
+    }
+    
+    /// Stop communication manager with timeout
+    private func stopCommunicationWithTimeout(timeoutSeconds: UInt32) async {
+        guard let commManager = communicationManager else { return }
         
-        // Stop the pod (this stops all containers and the VM)
-        try await pod.stop()
-        logger.info("✅ [ContainerManager] Pod stopped")
+        do {
+            try await Timeout.run(seconds: timeoutSeconds) {
+                await commManager.disconnect()
+            }
+            logger.debug("✅ [Cleanup] Communication manager disconnected")
+        } catch {
+            logger.warning("⚠️ [Cleanup] Communication disconnect timed out after \(timeoutSeconds)s")
+        }
         
-        logger.debug("🧹 [ContainerManager] Cleaning up references")
+        // Always clear regardless of success
+        communicationManager = nil
+        isCommunicationReady = false
+    }
+    
+    /// Stop pod with timeout
+    private func stopPodWithTimeout(pod: LinuxPod, timeoutSeconds: UInt32) async {
+        do {
+            try await Timeout.run(seconds: timeoutSeconds) {
+                try await pod.stop()
+            }
+            logger.debug("✅ [Cleanup] Pod stopped")
+        } catch is CancellationError {
+            logger.warning("⚠️ [Cleanup] Pod stop timed out after \(timeoutSeconds)s, VM may be orphaned")
+        } catch {
+            logger.warning("⚠️ [Cleanup] Pod stop error: \(error)")
+        }
+    }
+    
+    /// Force clear all state - ALWAYS succeeds, NEVER throws
+    private func forceClearState() {
+        logger.debug("🔄 [Cleanup] Force clearing state")
+        
+        // Clear all references (allows ARC to clean up)
         currentPod = nil
+        portForwarder = nil
+        communicationManager = nil
+        
+        // Reset UI state
         containerURL = nil
         isRunning = false
+        isCommunicationReady = false
+        portForwardingStatus = .inactive
         statusMessage = "Container stopped"
-        logger.info("✅ [ContainerManager] Container stopped successfully")
+        
+        logger.info("✅ [Cleanup] State cleared")
     }
     
     func checkContainerAPI(port: Int) async throws -> (statusCode: Int, body: String) {

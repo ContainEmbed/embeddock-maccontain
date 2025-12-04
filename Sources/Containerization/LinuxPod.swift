@@ -131,6 +131,18 @@ public final class LinuxPod: Sendable {
                 )
             }
         }
+        
+        /// Get created state for stop operation - allows stopping from errored state
+        func createdStateForStop() -> CreatedState? {
+            switch self {
+            case .created(let state):
+                return state
+            case .errored:
+                return nil  // Allow cleanup to proceed without resources
+            default:
+                return nil
+            }
+        }
 
         mutating func validateForCreate() throws {
             switch self {
@@ -481,54 +493,86 @@ extension LinuxPod {
         }
     }
 
-    /// Stop the pod's VM and all containers.
+    /// Stop the pod's VM and all containers with robust timeout handling.
     public func stop() async throws {
         try await self.state.withLock { state in
-            let createdState = try state.phase.createdState("stop")
+            // Allow stop from errored state - graceful degradation
+            guard let createdState = state.phase.createdStateForStop() else {
+                // Pod is not in created state, just reset to initialized
+                self.logger?.warning("⚠️ [LinuxPod] Pod not in created state, resetting to initialized")
+                state.phase = .initialized
+                return
+            }
 
+            // Phase 1: Stop socket relays (3s timeout)
             do {
-                try await createdState.relayManager.stopAll()
+                try await Timeout.run(seconds: 3) {
+                    try await createdState.relayManager.stopAll()
+                }
+                self.logger?.debug("✅ [LinuxPod] Relay manager stopped")
+            } catch {
+                self.logger?.warning("⚠️ [LinuxPod] Relay stop timed out or failed: \(error)")
+            }
 
-                // Stop all containers
-                let containerIDs = Array(state.containers.keys)
+            // Phase 2: Stop all containers with timeout
+            let containerIDs = Array(state.containers.keys)
 
-                for containerID in containerIDs {
-                    // Stop the container inline
-                    guard var container = state.containers[containerID] else {
-                        continue
-                    }
-
-                    if container.state == .stopped {
-                        continue
-                    }
-
-                    if let process = container.process, container.state == .started {
-                        if createdState.vm.state != .stopped {
-                            try? await process.kill(SIGKILL)
-                            _ = try? await process.wait(timeoutInSeconds: 3)
-
-                            try? await createdState.vm.withAgent { agent in
-                                try await agent.umount(
-                                    path: Self.guestRootfsPath(containerID),
-                                    flags: 0
-                                )
-                            }
-                        }
-
-                        try? await process.delete()
-                        container.process = nil
-                        container.state = .stopped
-                        state.containers[containerID] = container
-                    }
+            for containerID in containerIDs {
+                guard var container = state.containers[containerID] else {
+                    continue
                 }
 
-                try await createdState.vm.stop()
-                state.phase = .initialized
-            } catch {
-                try? await createdState.vm.stop()
-                state.phase.setErrored(error: error)
-                throw error
+                if container.state == .stopped {
+                    continue
+                }
+
+                if let process = container.process, container.state == .started {
+                    // Container stop with 5s timeout per container
+                    do {
+                        try await Timeout.run(seconds: 5) {
+                            if createdState.vm.state != .stopped {
+                                try? await process.kill(SIGKILL)
+                                _ = try? await process.wait(timeoutInSeconds: 3)
+
+                                // Try to unmount with timeout
+                                try? await createdState.vm.withAgent { agent in
+                                    try await agent.umount(
+                                        path: Self.guestRootfsPath(containerID),
+                                        flags: 0
+                                    )
+                                }
+                            }
+
+                            try? await process.delete()
+                        }
+                        self.logger?.debug("✅ [LinuxPod] Container \(containerID) stopped")
+                    } catch {
+                        self.logger?.warning("⚠️ [LinuxPod] Container \(containerID) stop timed out: \(error)")
+                    }
+                }
+                
+                // Always mark as stopped regardless of timeout
+                container.process = nil
+                container.state = .stopped
+                state.containers[containerID] = container
             }
+
+            // Phase 3: Stop VM (10s timeout)
+            do {
+                try await Timeout.run(seconds: 10) {
+                    try await createdState.vm.stop()
+                }
+                self.logger?.debug("✅ [LinuxPod] VM stopped")
+            } catch is CancellationError {
+                self.logger?.error("❌ [LinuxPod] VM stop timed out after 10s - VM may be orphaned")
+            } catch {
+                self.logger?.warning("⚠️ [LinuxPod] VM stop failed: \(error)")
+                // Try one more time without timeout
+                try? await createdState.vm.stop()
+            }
+            
+            // Always reset state to initialized
+            state.phase = .initialized
         }
     }
 
