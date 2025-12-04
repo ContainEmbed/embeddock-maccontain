@@ -148,14 +148,6 @@ This project is based on [Apple's Containerization framework](https://github.com
    - `vminitd` - Init process for the Linux VM
    - `vmexec` - Command execution helper
 
-### Verifying Guest Binaries
-
-Run the verification script to check binary integrity:
-
-```bash
-./scripts/setup-guest-binaries.sh verify
-```
-
 ---
 
 ## 🚀 Installation
@@ -360,9 +352,6 @@ embeddock-maccontain/
 ├── Package.swift                 # Swift package manifest
 ├── signing/
 │   └── vz.entitlements          # Virtualization entitlement
-├── scripts/
-│   ├── setup-guest-binaries.sh  # Binary management script
-│   └── versions.json            # Version tracking
 ├── Sources/
 │   ├── HelloWorldApp/           # Main application
 │   │   ├── main.swift           # App entry point & SwiftUI
@@ -417,22 +406,6 @@ The guest binaries (`vminitd`, `vmexec`) run inside the Linux VM. They are:
 - **Purpose**: 
   - `vminitd` - Runs as PID 1, manages container lifecycle
   - `vmexec` - Executes commands inside containers
-
-To rebuild or update:
-
-```bash
-# Verify existing binaries
-./scripts/setup-guest-binaries.sh verify
-
-# Download from GitHub (requires gh CLI)
-./scripts/setup-guest-binaries.sh download
-
-# Build using Docker (requires Docker)
-./scripts/setup-guest-binaries.sh build-docker
-
-# Show info
-./scripts/setup-guest-binaries.sh info
-```
 
 ### Entitlements
 
@@ -499,30 +472,7 @@ Log output includes emoji prefixes for easy scanning:
 
 ---
 
-### 2. Stop Container Button May Not Work
-
-**Issue**: Clicking "Stop Container" sometimes doesn't stop the container properly.
-
-**Symptoms**:
-- Container status still shows as running after clicking stop
-- App becomes unresponsive or hangs
-- Subsequent container starts fail
-
-**Root Cause**: The VM or container process may be in an inconsistent state, or the stop signal doesn't propagate correctly through the vsock bridge to vminitd.
-
-**Solution**:
-1. Wait 10-15 seconds for the stop operation to complete
-2. If the app becomes unresponsive, **force quit** the app (Cmd+Q or Force Quit from Apple menu)
-3. Restart the app before trying to start a new container
-
-**Prevention**:
-- Avoid stopping containers immediately after starting them
-- Wait for the container to fully initialize before stopping
-- Don't close the app window while a container is running - use "Stop Container" first
-
----
-
-### 3. Port Forwarding May Not Work Initially
+### 2. Port Forwarding May Not Work Initially
 
 **Issue**: After container starts, `localhost:3000` may not be accessible immediately.
 
@@ -553,26 +503,11 @@ Log output includes emoji prefixes for easy scanning:
 
 ---
 
-### 4. Docker Build Upstream Issue
-
-**Issue**: `./scripts/setup-guest-binaries.sh build-docker` fails with `statfs` error.
-
-**Root Cause**: Bug in upstream `apple/containerization` repository's `Cgroup2Manager.swift` - missing Linux system call import.
-
-**Workaround**: Use pre-built binaries via `download` command or use existing verified binaries.
-
----
-
 ## 🔍 Troubleshooting
 
 ### Container Won't Start
 
-1. **Check prerequisites**:
-   ```bash
-   ./scripts/setup-guest-binaries.sh verify
-   ```
-
-2. **Check kernel exists**:
+1. **Check kernel exists**:
    ```bash
    ls -la ~/Library/Application\ Support/HelloWorldApp/containers/vmlinux
    ```
