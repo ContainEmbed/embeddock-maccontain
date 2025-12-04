@@ -737,13 +737,16 @@ class ContainerManager: ObservableObject {
         }
     }
     
-    /// Robust container stop with guaranteed completion within 30 seconds
+    /// Robust container stop with guaranteed completion within 30 seconds.
+    /// This is idempotent - calling it when no container is running is safe and succeeds.
     func stopContainer() async throws {
         logger.info("🛑 [ContainerManager] Stopping container (robust cleanup)")
         
+        // Early exit if nothing to stop - but still clear any residual state
         guard let pod = currentPod else {
-            logger.warning("⚠️ [ContainerManager] No container is running")
-            throw ContainerizationError(.invalidState, message: "No container is running")
+            logger.info("ℹ️ [ContainerManager] No container pod to stop, clearing residual state")
+            forceClearState()
+            return
         }
         
         statusMessage = "Stopping container..."
