@@ -18,18 +18,66 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 import Logging
+import os.log
+
+// Custom log handler that prints to stderr (visible in VS Code debug console)
+// and also uses os_log for Xcode/Console.app visibility
+struct DebugLogHandler: LogHandler {
+    let label: String
+    let osLog: OSLog
+    
+    var metadata: Logging.Logger.Metadata = [:]
+    var logLevel: Logging.Logger.Level = .debug
+    
+    init(label: String) {
+        self.label = label
+        self.osLog = OSLog(subsystem: label, category: "app")
+    }
+    
+    subscript(metadataKey key: String) -> Logging.Logger.Metadata.Value? {
+        get { metadata[key] }
+        set { metadata[key] = newValue }
+    }
+    
+    func log(level: Logging.Logger.Level, message: Logging.Logger.Message, metadata: Logging.Logger.Metadata?, source: String, file: String, function: String, line: UInt) {
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        let logMessage = "\(timestamp) [\(level)] [\(label)] \(message)"
+        
+        // Print to stderr - this shows in VS Code debug console
+        fputs(logMessage + "\n", stderr)
+        fflush(stderr)
+        
+        // Also log to os_log for Xcode/Console.app
+        let osLogType: OSLogType
+        switch level {
+        case .trace, .debug: osLogType = .debug
+        case .info, .notice: osLogType = .info
+        case .warning: osLogType = .default
+        case .error: osLogType = .error
+        case .critical: osLogType = .fault
+        }
+        os_log("%{public}@", log: osLog, type: osLogType, "[\(level)] \(message)")
+    }
+}
+
+// Bootstrap logging BEFORE any loggers are created
+// This must happen at file scope to ensure it runs before @StateObject initialization
+private let _bootstrapLogging: Void = {
+    LoggingSystem.bootstrap { label in
+        return DebugLogHandler(label: label)
+    }
+}()
 
 @main
 struct HelloWorldApp: App {
-    @StateObject private var containerManager = ContainerManager()
+    @StateObject private var containerManager: ContainerManager = {
+        // Ensure logging is bootstrapped before ContainerManager is created
+        _ = _bootstrapLogging
+        return ContainerManager()
+    }()
     
     init() {
-        // Configure logging
-        LoggingSystem.bootstrap { label in
-            var handler = StreamLogHandler.standardOutput(label: label)
-            handler.logLevel = .debug
-            return handler
-        }
+        // Logging already bootstrapped at file scope
     }
     
     var body: some Scene {
