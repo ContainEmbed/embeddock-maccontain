@@ -18,6 +18,7 @@ import Foundation
 import Containerization
 import ContainerizationOCI
 import ContainerizationArchive
+import AppKit
 import ContainerizationEXT4
 import ContainerizationError
 import Logging
@@ -521,13 +522,116 @@ class ContainerManager: ObservableObject {
             
             logger.info("🚀 [ContainerManager] Step 10/10: Creating and starting the pod")
             statusMessage = "Step 10/10: Starting container..."
-            logger.debug("🏗️ [ContainerManager] Creating pod")
-            try await pod.create()
-            logger.info("✅ [ContainerManager] Pod created")
             
-            logger.debug("▶️ [ContainerManager] Starting container 'main'")
-            try await pod.startContainer("main")
-            logger.info("✅ [ContainerManager] Container started successfully")
+            // Step 10 timeout: 90 seconds for VM startup + container start
+            // Note: pod.create() holds an internal lock, so we can't call pod.stop() during timeout
+            // Instead we force-clear our state and let pod.create() eventually fail/complete
+            let step10TimeoutSeconds: Double = 90.0
+            let step10StartTime = Date()
+            var step10TimedOut = false
+            
+            // Start a background timer that will set a flag and force-clear state
+            let timeoutTask = Task { [weak self] in
+                try await Task.sleep(nanoseconds: UInt64(step10TimeoutSeconds * 1_000_000_000))
+                // If we get here, timeout occurred
+                guard let self = self else { return }
+                step10TimedOut = true
+                await MainActor.run {
+                    self.logger.error("⏰ [ContainerManager] Step 10 TIMEOUT: 90 seconds exceeded!")
+                    self.logger.error("⏰ [ContainerManager] VM startup is hanging - force clearing state")
+                    self.statusMessage = "❌ Failed: VM startup timed out after 90 seconds"
+                    // Force clear state - don't call stopContainer() as it will deadlock
+                    // The pod.create() will eventually fail or complete on its own
+                    self.forceClearState()
+                    self.isRunning = false
+                    
+                    // Show error dialog to user
+                    let alert = NSAlert()
+                    alert.messageText = "Container Startup Timeout"
+                    alert.informativeText = "The virtual machine failed to start within 90 seconds.\n\nPossible causes:\n• Insufficient system resources\n• Corrupted kernel or init files\n• System virtualization issues\n\nPlease try again or check the console logs for details."
+                    alert.alertStyle = .critical
+                    alert.addButton(withTitle: "OK")
+                    alert.runModal()
+                }
+            }
+            
+            defer {
+                timeoutTask.cancel()
+            }
+            
+            do {
+                // Phase 1: Create pod (VM startup)
+                logger.debug("🏗️ [ContainerManager] Step 10a: Creating pod (VM startup)")
+                do {
+                    try await pod.create()
+                    // Check if we timed out during this operation
+                    if step10TimedOut {
+                        throw ContainerizationError(.timeout, message: "Step 10 timed out after \(step10TimeoutSeconds) seconds")
+                    }
+                    logger.info("✅ [ContainerManager] Pod created successfully")
+                } catch {
+                    if step10TimedOut {
+                        throw ContainerizationError(.timeout, message: "Step 10 timed out after \(step10TimeoutSeconds) seconds")
+                    }
+                    logger.error("❌ [ContainerManager] Step 10a FAILED: Pod creation failed")
+                    await printStep10Diagnostics(pod: pod, phase: "pod.create()", error: error)
+                    throw error
+                }
+                
+                let elapsedTime = Date().timeIntervalSince(step10StartTime)
+                logger.debug("⏱️ [ContainerManager] Step 10a completed in \(String(format: "%.1f", elapsedTime))s")
+                
+                // Phase 2: Start container
+                logger.debug("▶️ [ContainerManager] Step 10b: Starting container 'main'")
+                do {
+                    try await pod.startContainer("main")
+                    if step10TimedOut {
+                        throw ContainerizationError(.timeout, message: "Step 10 timed out after \(step10TimeoutSeconds) seconds")
+                    }
+                    logger.info("✅ [ContainerManager] Container start command succeeded")
+                } catch {
+                    if step10TimedOut {
+                        throw ContainerizationError(.timeout, message: "Step 10 timed out after \(step10TimeoutSeconds) seconds")
+                    }
+                    logger.error("❌ [ContainerManager] Step 10b FAILED: Container start failed")
+                    await printStep10Diagnostics(pod: pod, phase: "pod.startContainer()", error: error)
+                    throw error
+                }
+                
+                // Phase 3: Immediate crash detection
+                logger.debug("🔍 [ContainerManager] Step 10c: Checking for immediate crash")
+                let crashCheck = await checkForImmediateCrash(pod: pod, containerID: "main")
+                if crashCheck.crashed {
+                    let exitInfo = crashCheck.exitStatus.map { formatExitStatus($0) } ?? "Unknown exit status"
+                    logger.error("❌ [ContainerManager] Step 10c FAILED: Container crashed immediately after start!")
+                    logger.error("❌ [ContainerManager] \(exitInfo)")
+                    await printStep10Diagnostics(pod: pod, phase: "immediate crash detection", error: nil)
+                    throw ContainerizationError(.internalError, message: "Container crashed immediately after start: \(exitInfo)")
+                }
+                logger.info("✅ [ContainerManager] Container is running (no immediate crash)")
+                
+                let totalElapsed = Date().timeIntervalSince(step10StartTime)
+                logger.info("⏱️ [ContainerManager] Step 10 completed in \(String(format: "%.1f", totalElapsed))s")
+                
+            } catch {
+                // Step 10 failed or timed out - clean up
+                logger.error("❌ [ContainerManager] Step 10 failed: \(error.localizedDescription)")
+                statusMessage = "❌ Step 10 failed: \(error.localizedDescription)"
+                
+                // Attempt to stop container/pod to clean up (if not already done by timeout)
+                if !step10TimedOut {
+                    logger.warning("🧹 [ContainerManager] Cleaning up after Step 10 failure...")
+                    do {
+                        self.currentPod = pod
+                        try await stopContainer()
+                        logger.info("✅ [ContainerManager] Cleanup successful after Step 10 failure")
+                    } catch let cleanupError {
+                        logger.error("⚠️ [ContainerManager] Cleanup after Step 10 failure also failed: \(cleanupError)")
+                    }
+                }
+                
+                throw error
+            }
             
             logger.debug("💾 [ContainerManager] Storing pod reference")
             self.currentPod = pod
@@ -542,29 +646,16 @@ class ContainerManager: ObservableObject {
             statusMessage = "✅ Container running at \(containerIP):\(port) (inside VM)"
             
             logger.info("✅✅✅ [ContainerManager] Container started successfully!")
-            logger.info("🧪 [ContainerManager] Testing container response...")
             
-            // Test that the container is actually responding by curl from within the VM
-            do {
-                let curlProcess = try await pod.execInContainer(
-                    "main",
-                    processID: "test-curl",
-                    configuration: { config in
-                        config.arguments = ["curl", "-s", "-m", "5", "http://localhost:\(port)/"]
-                        config.workingDirectory = "/"
-                    }
-                )
-                try await curlProcess.start()
-                let exitStatus = try await curlProcess.wait(timeoutInSeconds: 10)
-                
-                if exitStatus.exitCode == 0 {
-                    logger.info("✅ [ContainerManager] Container HTTP server is responding!")
-                    statusMessage = "✅ Container running and responding (VM-internal network)"
-                } else {
-                    logger.warning("⚠️ [ContainerManager] Container may not be responding yet (exit code: \(exitStatus.exitCode))")
-                }
-            } catch {
-                logger.warning("⚠️ [ContainerManager] Could not test container response: \(error)")
+            // Test container HTTP response with retries (use optimized 3 retries)
+            let httpResponding = await testContainerResponseWithRetry(pod: pod, port: port)
+            if httpResponding {
+                statusMessage = "✅ Container running and responding (VM-internal network)"
+            } else {
+                // HTTP not responding - this is OK for non-HTTP workloads
+                // Container was already verified running in Phase 10c, so just warn
+                logger.warning("⚠️ [ContainerManager] HTTP server not responding, but container process is running")
+                statusMessage = "⚠️ Container running but HTTP not responding on port \(port)"
             }
             
             // Initialize communication layer
@@ -855,6 +946,174 @@ class ContainerManager: ObservableObject {
         logger.info("✅ [Cleanup] State cleared")
     }
     
+    // MARK: - Step 10 Diagnostics
+    
+    /// Print comprehensive diagnostics when Step 10 fails
+    private func printStep10Diagnostics(pod: LinuxPod, phase: String, error: Error?) async {
+        logger.error("🔍 [Step10 Diagnostics] ========== DIAGNOSTIC REPORT ==========")
+        logger.error("🔍 [Step10 Diagnostics] Failed Phase: \(phase)")
+        
+        if let error = error {
+            logger.error("🔍 [Step10 Diagnostics] Error: \(error.localizedDescription)")
+            logger.error("🔍 [Step10 Diagnostics] Full Error: \(String(describing: error))")
+        }
+        
+        // Check container list
+        let containers = await pod.listContainers()
+        logger.error("🔍 [Step10 Diagnostics] Registered Containers: \(containers.isEmpty ? "NONE" : containers.joined(separator: ", "))")
+        
+        // Try to get container statistics
+        do {
+            let stats = try await pod.statistics()
+            for stat in stats {
+                logger.error("🔍 [Step10 Diagnostics] Container '\(stat.id)' - CPU: \(stat.cpu.usageUsec)us, Memory: \(stat.memory.usageBytes) bytes")
+            }
+        } catch {
+            logger.error("🔍 [Step10 Diagnostics] Could not get statistics: \(error.localizedDescription)")
+        }
+        
+        // Try a simple health probe via exec
+        do {
+            let healthProcess = try await pod.execInContainer(
+                "main",
+                processID: "health-probe-\(UUID().uuidString.prefix(8))",
+                configuration: { config in
+                    config.arguments = ["echo", "health-check-ok"]
+                    config.workingDirectory = "/"
+                }
+            )
+            try await healthProcess.start()
+            let exitStatus = try await healthProcess.wait(timeoutInSeconds: 3)
+            if exitStatus.exitCode == 0 {
+                logger.error("🔍 [Step10 Diagnostics] Health probe: ✅ Container is responsive")
+            } else {
+                logger.error("🔍 [Step10 Diagnostics] Health probe: ❌ Exit code \(exitStatus.exitCode)")
+            }
+        } catch {
+            logger.error("🔍 [Step10 Diagnostics] Health probe: ❌ Failed - \(error.localizedDescription)")
+        }
+        
+        // Log boot log location for manual inspection
+        let bootlogPath = workDir.appendingPathComponent("bootlog.txt").path
+        logger.error("🔍 [Step10 Diagnostics] Boot log may be at: \(bootlogPath)")
+        
+        // Try to read last lines of boot log if it exists
+        if FileManager.default.fileExists(atPath: bootlogPath) {
+            do {
+                let bootlogContent = try String(contentsOfFile: bootlogPath, encoding: .utf8)
+                let lines = bootlogContent.components(separatedBy: .newlines)
+                let lastLines = lines.suffix(20).joined(separator: "\n")
+                logger.error("🔍 [Step10 Diagnostics] Boot log (last 20 lines):\n\(lastLines)")
+            } catch {
+                logger.error("🔍 [Step10 Diagnostics] Could not read boot log: \(error)")
+            }
+        }
+        
+        logger.error("🔍 [Step10 Diagnostics] ========== END DIAGNOSTIC REPORT ==========")
+    }
+    
+    /// Check if container process exited immediately after start (crash detection)
+    /// Uses a 1 second timeout - if container exits within 1s, it likely crashed
+    private func checkForImmediateCrash(pod: LinuxPod, containerID: String) async -> (crashed: Bool, exitStatus: ExitStatus?) {
+        logger.debug("🔍 [CrashDetection] Checking if container '\(containerID)' exited immediately...")
+        
+        do {
+            // Wait with very short timeout - if this returns without timeout, process exited
+            let exitStatus = try await pod.waitContainer(containerID, timeoutInSeconds: 1)
+            
+            // If we get here, the container exited!
+            logger.error("❌ [CrashDetection] Container '\(containerID)' exited immediately!")
+            logger.error("❌ [CrashDetection] \(formatExitStatus(exitStatus))")
+            
+            return (crashed: true, exitStatus: exitStatus)
+        } catch {
+            // Timeout or other error means container is still running - that's good!
+            logger.debug("✅ [CrashDetection] Container '\(containerID)' is still running (wait timed out as expected)")
+            return (crashed: false, exitStatus: nil)
+        }
+    }
+    
+    /// Test container HTTP response with retry and exponential backoff
+    /// Optimized for speed: 3 retries with shorter delays
+    private func testContainerResponseWithRetry(pod: LinuxPod, port: Int, maxRetries: Int = 3) async -> Bool {
+        logger.info("🧪 [HealthCheck] Testing container HTTP response with \(maxRetries) retries...")
+        
+        let delays: [UInt64] = [300_000_000, 700_000_000, 1_500_000_000] // 300ms, 700ms, 1.5s
+        
+        for attempt in 1...maxRetries {
+            let delayIndex = min(attempt - 1, delays.count - 1)
+            
+            if attempt > 1 {
+                let delayNs = delays[delayIndex]
+                let delayMs = delayNs / UInt64(1_000_000)
+                logger.debug("🔄 [HealthCheck] Retry \(attempt)/\(maxRetries), waiting \(delayMs)ms...")
+                try? await Task.sleep(nanoseconds: delayNs)
+            }
+            
+            do {
+                let curlProcess = try await pod.execInContainer(
+                    "main",
+                    processID: "health-check-\(attempt)-\(UUID().uuidString.prefix(8))",
+                    configuration: { config in
+                        config.arguments = ["curl", "-s", "-m", "2", "-o", "/dev/null", "-w", "%{http_code}", "http://localhost:\(port)/"]
+                        config.workingDirectory = "/"
+                    }
+                )
+                try await curlProcess.start()
+                let exitStatus = try await curlProcess.wait(timeoutInSeconds: 5)
+                
+                if exitStatus.exitCode == 0 {
+                    logger.info("✅ [HealthCheck] Container HTTP server responding on attempt \(attempt)")
+                    return true
+                } else {
+                    logger.debug("⚠️ [HealthCheck] Attempt \(attempt): curl exit code \(exitStatus.exitCode)")
+                }
+            } catch {
+                logger.debug("⚠️ [HealthCheck] Attempt \(attempt) failed: \(error.localizedDescription)")
+            }
+        }
+        
+        logger.warning("⚠️ [HealthCheck] Container HTTP server not responding after \(maxRetries) attempts")
+        return false
+    }
+    
+    /// Format exit status for display
+    private nonisolated func formatExitStatus(_ exitStatus: ExitStatus) -> String {
+        let exitCode = exitStatus.exitCode
+        var result = "Exit code: \(exitCode)"
+        
+        // Exit codes 128+ often indicate signal termination (128 + signal number)
+        if exitCode > 128 {
+            let signal = exitCode - 128
+            let signalName = signalToName(signal)
+            result += " (killed by signal \(signal): \(signalName))"
+        } else if exitCode == 127 {
+            result += " (command not found)"
+        } else if exitCode == 126 {
+            result += " (permission denied)"
+        } else if exitCode == 1 {
+            result += " (general error)"
+        }
+        
+        return result
+    }
+    
+    /// Convert signal number to human-readable name
+    private nonisolated func signalToName(_ signal: Int32) -> String {
+        switch signal {
+        case 1: return "SIGHUP"
+        case 2: return "SIGINT"
+        case 3: return "SIGQUIT"
+        case 6: return "SIGABRT"
+        case 9: return "SIGKILL"
+        case 11: return "SIGSEGV"
+        case 13: return "SIGPIPE"
+        case 14: return "SIGALRM"
+        case 15: return "SIGTERM"
+        default: return "UNKNOWN"
+        }
+    }
+
     func checkContainerAPI(port: Int) async throws -> (statusCode: Int, body: String) {
         logger.info("🌐 [ContainerManager] Checking container API at localhost:\(port)")
         
