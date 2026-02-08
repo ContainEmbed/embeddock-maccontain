@@ -69,29 +69,44 @@ This project is based on [Apple's Containerization framework](https://github.com
 
 ## 🏗️ Architecture
 
+### System Overview
+
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                             macOS Host                                       │
 │  ┌─────────────────────────────────────────────────────────────────────────┐│
 │  │                        HelloWorldApp (SwiftUI)                          ││
-│  │  ┌───────────────┐  ┌──────────────────┐  ┌─────────────────────────┐  ││
-│  │  │ ContentView   │  │ ContainerManager │  │ TcpPortForwarder        │  ││
-│  │  │ (UI Layer)    │──│ (Control Logic)  │──│ (Host Port Binding)     │  ││
-│  │  └───────────────┘  └────────┬─────────┘  └──────────┬──────────────┘  ││
-│  └──────────────────────────────┼───────────────────────┼──────────────────┘│
-│                                 │                       │                    │
-│  ┌──────────────────────────────┴───────────────────────┴──────────────────┐│
-│  │                    Containerization Framework                           ││
-│  │  ┌────────────────┐  ┌─────────────────┐  ┌──────────────────────────┐ ││
-│  │  │ ImageStore     │  │ LinuxPod        │  │ VZVirtualMachineManager  │ ││
-│  │  │ (OCI Images)   │  │ (Container Mgmt)│  │ (VM Lifecycle)           │ ││
-│  │  └────────────────┘  └─────────────────┘  └──────────────────────────┘ ││
+│  │                                                                         ││
+│  │  ┌─────────────┐  ┌────────────────────┐  ┌──────────────────────────┐ ││
+│  │  │ Views &     │  │ ContentViewModel   │  │ ContainerManager         │ ││
+│  │  │ Components  │──│ (MVVM Binding)     │──│ (Thin Orchestrator)      │ ││
+│  │  └─────────────┘  └────────────────────┘  └──────────┬───────────────┘ ││
+│  │                                                      │                  ││
+│  │  ┌───────────────────────────────────────────────────┴────────────────┐ ││
+│  │  │                   Composition Modules                              │ ││
+│  │  │                                                                    │ ││
+│  │  │  Lifecycle/         Image/          Container/       Diagnostics/  │ ││
+│  │  │  ┌──────────────┐  ┌─────────────┐ ┌──────────────┐ ┌───────────┐ │ ││
+│  │  │  │Startup       │  │ImageLoader  │ │PodFactory    │ │Diagnostics│ │ ││
+│  │  │  │Coordinator   │  │ImageService │ │Container     │ │Helper     │ │ ││
+│  │  │  │NodeServer    │  └─────────────┘ │Operations    │ └───────────┘ │ ││
+│  │  │  │Coordinator   │                  │ContainerFile │               │ ││
+│  │  │  │PostLaunch    │  Communication/  │System        │ PortForward/  │ ││
+│  │  │  │Handler       │  ┌─────────────┐ └──────────────┘ ┌───────────┐ │ ││
+│  │  │  │Cleanup       │  │Communication│                  │TcpPort    │ │ ││
+│  │  │  │Coordinator   │  │Manager      │                  │Forwarder  │ │ ││
+│  │  │  │Prerequisite  │  │HTTP/Vsock/  │                  │GuestBridge│ │ ││
+│  │  │  │Checker       │  │UnixSocket   │                  │Connection │ │ ││
+│  │  │  │StateMachine  │  └─────────────┘                  │Relay      │ │ ││
+│  │  │  └──────────────┘                                   └───────────┘ │ ││
+│  │  └────────────────────────────────────────────────────────────────────┘ ││
 │  └─────────────────────────────────────────────────────────────────────────┘│
-│                                    │                                         │
-│                          ┌─────────┴─────────┐                              │
-│                          │   Vsock Bridge    │                              │
-│                          │   (Host ↔ Guest)  │                              │
-│                          └─────────┬─────────┘                              │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────────┐│
+│  │                    Containerization Framework (Apple)                    ││
+│  │  ImageStore · LinuxPod · VZVirtualMachineManager · Kernel · EXT4        ││
+│  └─────────────────────────────────────────────────────────────────────────┘│
+│                                    │ Vsock                                   │
 └────────────────────────────────────┼────────────────────────────────────────┘
                                      │
 ┌────────────────────────────────────┼────────────────────────────────────────┐
@@ -113,19 +128,91 @@ This project is based on [Apple's Containerization framework](https://github.com
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Component Overview
+### Design Pattern: Composition-Based Orchestration
 
-| Component | Role |
-|-----------|------|
-| **ContentView** | SwiftUI interface for user interaction |
-| **ContainerManager** | Orchestrates container lifecycle (pull, unpack, start, stop) |
-| **ContainerCommunication** | Handles exec, HTTP requests, and message passing |
+`ContainerManager` is a **thin orchestrator** that delegates every responsibility to focused, single-purpose modules. Both container launch paths (`startContainerFromImage` and `startNodeServer`) follow the same 3-phase pattern:
+
+```
+1. Pre-flight  →  ensureStoppedIfRunning() / checkPrerequisites()
+2. Launch      →  StartupCoordinator  or  NodeServerCoordinator
+3. Post-launch →  PostLaunchHandler (health, communication, port forwarding)
+```
+
+### Module Overview
+
+#### Lifecycle (`Lifecycle/`)
+
+| Module | Role |
+|--------|------|
+| **ContainerStateMachine** | Type-safe state machine (idle → initializing → running → stopping → failed) |
+| **StartupCoordinator** | Multi-step OCI image → container launch pipeline |
+| **NodeServerCoordinator** | Multi-step Node.js pull → configure → launch pipeline |
+| **PostLaunchHandler** | Shared post-launch steps: health check, communication setup, port forwarding |
+| **CleanupCoordinator** | Phased cleanup with per-phase and master timeouts |
+| **PrerequisiteChecker** | Validates kernel, vminitd, vmexec, init.block presence |
+
+#### Image (`Image/`)
+
+| Module | Role |
+|--------|------|
+| **ImageLoader** | Loads OCI images from `.tar` / `.tar.gz` files |
+| **ImageService** | Pulls images from registries, unpacks to EXT4 rootfs |
+
+#### Container (`Container/`)
+
+| Module | Role |
+|--------|------|
+| **PodFactory** | Creates LinuxPods with kernel, VM manager, and container config |
+| **ContainerOperations** | High-level exec, file I/O, API health checks on running containers |
+| **ContainerFileSystem** | File browsing and read/write inside running containers |
+
+#### Communication (`Communication/`)
+
+| Module | Role |
+|--------|------|
+| **CommunicationManager** | Central hub for container communication channels |
+| **HTTPCommunicator** | HTTP-based communication via container IP |
+| **VsockCommunicator** | High-performance Vsock host-guest communication |
+| **UnixSocketCommunicator** | Unix domain socket communication |
+
+#### Port Forwarding (`PortForwarding/`)
+
+| Module | Role |
+|--------|------|
 | **TcpPortForwarder** | Bridges host TCP ports to container via vsock |
-| **ImageStore** | Manages OCI image storage and layer unpacking |
-| **LinuxPod** | Represents a running container with its VM |
-| **VZVirtualMachineManager** | Interfaces with Apple Virtualization Framework |
-| **vminitd** | Linux binary running as PID 1 inside the VM |
-| **vmexec** | Executes commands inside containers |
+| **GuestBridge** | Manages socat process inside VM for vsock-to-TCP relay |
+| **ConnectionRelay** | Per-connection bidirectional data relay |
+| **ForwardingStatus** | Observable port forwarding state enum |
+
+#### Diagnostics (`Diagnostics/`)
+
+| Module | Role |
+|--------|------|
+| **DiagnosticsHelper** | Crash detection, health probes, diagnostic reports, system info |
+
+#### UI Layer
+
+| Module | Location | Role |
+|--------|----------|------|
+| **HelloWorldApp** | `App/` | SwiftUI app entry point |
+| **ContentViewModel** | `ViewModels/` | MVVM view model for main content |
+| **ContentView** | `Views/` | Main container management interface |
+| **SettingsView** | `Views/` | Port and configuration settings |
+| **ControlSection** | `Components/` | Start/stop buttons, image picker |
+| **StatusSection** | `Components/` | Container status, system info, channels |
+| **TerminalSection** | `Components/` | In-container command execution |
+| **FilesSection** | `Components/` | Container file browser, boot log, diagnostics |
+
+#### Infrastructure
+
+| Module | Location | Role |
+|--------|----------|------|
+| **AppDelegate** | root | macOS application delegate, auto-start via CLI |
+| **DebugLogHandler** | `Logging/` | Custom structured log handler |
+| **OutputCollector** | `Helpers/` | Shared stdout/stderr collector for exec |
+| **ResumableOnce** | `Helpers/` | One-shot async continuation helper |
+| **vminitd** | `Resources/` | Linux binary — PID 1 inside the VM |
+| **vmexec** | `Resources/` | Linux binary — command execution inside containers |
 
 ---
 
@@ -349,34 +436,96 @@ let exitStatus = try await process.wait(timeoutInSeconds: 30)
 
 ```
 embeddock-maccontain/
-├── Package.swift                 # Swift package manifest
+├── Package.swift                          # Swift package manifest
+├── README.md
+├── LICENSE
+├── app-config.json                        # Application configuration
+├── sample-express-server.tar              # Sample OCI image for testing
 ├── signing/
-│   └── vz.entitlements          # Virtualization entitlement
-├── Sources/
-│   ├── HelloWorldApp/           # Main application
-│   │   ├── main.swift           # App entry point & SwiftUI
-│   │   ├── ContainerManager.swift    # Container lifecycle
-│   │   ├── ContainerCommunication.swift  # Exec/HTTP comm
-│   │   ├── TcpPortForwarder.swift    # Port forwarding
-│   │   ├── AppDelegate.swift    # macOS app delegate
-│   │   └── Resources/
-│   │       ├── vminitd          # Guest init binary
-│   │       └── vmexec           # Guest exec binary
-│   ├── Containerization/        # Core container library
-│   ├── ContainerizationOCI/     # OCI image handling
-│   ├── ContainerizationEXT4/    # EXT4 filesystem
-│   ├── ContainerizationArchive/ # Archive extraction
-│   ├── ContainerizationIO/      # I/O utilities
-│   ├── ContainerizationOS/      # OS abstractions
-│   ├── ContainerizationNetlink/ # Netlink for networking
-│   ├── ContainerizationExtras/  # Utility extensions
-│   ├── ContainerizationError/   # Error types
-│   ├── CShim/                   # C shims for syscalls
-│   ├── cctl/                    # CLI tool
-│   └── Integration/             # Integration utilities
-└── bin/
-    ├── cctl                     # Pre-built CLI
-    └── containerization-integration
+│   └── vz.entitlements                    # Virtualization entitlement
+├── bin/
+│   ├── cctl                               # Pre-built CLI
+│   └── containerization-integration       # Integration helper
+│
+└── Sources/
+    ├── HelloWorldApp/                     # ── Main Application ──
+    │   ├── ContainerManager.swift         # Thin orchestrator (composition root)
+    │   ├── AppDelegate.swift              # macOS app delegate, CLI auto-start
+    │   │
+    │   ├── App/
+    │   │   └── HelloWorldApp.swift        # @main SwiftUI entry point
+    │   │
+    │   ├── Lifecycle/                     # Container lifecycle coordination
+    │   │   ├── ContainerState.swift       # State machine (ContainerState, StartupStep)
+    │   │   ├── StartupCoordinator.swift   # OCI image → container pipeline
+    │   │   ├── NodeServerCoordinator.swift # Node.js pull → container pipeline
+    │   │   ├── PostLaunchHandler.swift    # Post-launch: health, comms, port forwarding
+    │   │   ├── CleanupCoordinator.swift   # Phased shutdown with timeouts
+    │   │   └── PrerequisiteChecker.swift  # Validates kernel, binaries, resources
+    │   │
+    │   ├── Image/                         # OCI image handling
+    │   │   ├── ImageLoader.swift          # Load images from .tar/.tar.gz files
+    │   │   └── ImageService.swift         # Pull from registries, unpack to EXT4
+    │   │
+    │   ├── Container/                     # Container runtime operations
+    │   │   ├── PodFactory.swift           # Pod/VM creation with kernel & config
+    │   │   ├── ContainerOperations.swift  # Exec, file I/O, API checks
+    │   │   └── ContainerFileSystem.swift  # File browsing inside containers
+    │   │
+    │   ├── Communication/                 # Host ↔ container communication
+    │   │   ├── CommunicationManager.swift # Central channel manager
+    │   │   ├── Protocols.swift            # ContainerCommunicator protocol
+    │   │   ├── Errors.swift               # Communication error types
+    │   │   ├── HTTPCommunicator.swift     # HTTP channel implementation
+    │   │   ├── VsockCommunicator.swift    # Vsock channel implementation
+    │   │   └── UnixSocketCommunicator.swift # Unix socket channel
+    │   │
+    │   ├── PortForwarding/                # TCP port forwarding via vsock
+    │   │   ├── TcpPortForwarder.swift     # Host TCP → container via vsock
+    │   │   ├── GuestBridge.swift          # In-VM socat vsock-to-TCP bridge
+    │   │   ├── ConnectionRelay.swift      # Per-connection data relay
+    │   │   └── ForwardingStatus.swift     # Observable forwarding state
+    │   │
+    │   ├── Diagnostics/                   # Health & diagnostics
+    │   │   └── DiagnosticsHelper.swift    # Crash detection, health probes, reports
+    │   │
+    │   ├── Views/                         # SwiftUI views
+    │   │   ├── ContentView.swift          # Main container management view
+    │   │   └── SettingsView.swift         # Port & configuration settings
+    │   │
+    │   ├── ViewModels/                    # MVVM view models
+    │   │   └── ContentViewModel.swift     # Main view model
+    │   │
+    │   ├── Components/                    # Reusable SwiftUI sections
+    │   │   ├── ControlSection.swift       # Start/stop buttons, image picker
+    │   │   ├── StatusSection.swift        # Status, system info, channels
+    │   │   ├── TerminalSection.swift      # In-container terminal
+    │   │   ├── FilesSection.swift         # File browser, boot log, diagnostics
+    │   │   └── NSTextFieldWrapper.swift   # AppKit text field bridge
+    │   │
+    │   ├── Helpers/                       # Shared utilities
+    │   │   ├── OutputCollector.swift      # Stdout/stderr collector
+    │   │   └── ResumableOnce.swift        # One-shot async continuation
+    │   │
+    │   ├── Logging/                       # Log infrastructure
+    │   │   └── DebugLogHandler.swift      # Structured log handler
+    │   │
+    │   └── Resources/                     # Guest binaries
+    │       ├── vminitd                    # Linux ARM64 — VM init (PID 1)
+    │       └── vmexec                     # Linux ARM64 — exec helper
+    │
+    ├── Containerization/                  # Core container library (Apple)
+    ├── ContainerizationOCI/               # OCI image spec handling
+    ├── ContainerizationEXT4/              # EXT4 filesystem creation
+    ├── ContainerizationArchive/           # Archive extraction
+    ├── ContainerizationIO/                # I/O utilities
+    ├── ContainerizationOS/                # OS abstractions
+    ├── ContainerizationNetlink/           # Netlink for networking
+    ├── ContainerizationExtras/            # Utility extensions
+    ├── ContainerizationError/             # Error types
+    ├── CShim/                             # C shims for syscalls
+    ├── cctl/                              # CLI tool
+    └── Integration/                       # Integration utilities
 ```
 
 ---
@@ -450,25 +599,19 @@ Log output includes emoji prefixes for easy scanning:
 
 ## ⚠️ Known Issues
 
-### 1. Container Start Failure at Step 10 (RESTART REQUIRED)
+### 1. Container Start at Step 10
 
-**Issue**: Sometimes containers fail during the final startup step (Step 10).
+**Improvement**: Step 10 now includes a **90-second timeout** with automatic crash detection and diagnostic capture. The `StartupCoordinator` and `NodeServerCoordinator` both perform immediate crash checks after container start.
 
-**Symptoms**:
-- App shows "Step 10/10: Starting container..." and then fails
-- Error message may reference VM or process start failure
-- Subsequent attempts also fail
-
-**Root Cause**: Resource cleanup from previous container runs may be incomplete, or VM state becomes inconsistent.
-
-**Solution**: 
-1. **Restart the app** completely
-2. Try starting the container again
-3. If persistent, also restart your Mac to clear virtualization state
+**If Step 10 still fails**:
+1. Check the **Diagnostics** button in the Files section for a captured `DiagnosticReport`
+2. View the **Boot Log** for kernel/vminitd messages
+3. Restart the app and try again
+4. If persistent, restart your Mac to clear virtualization state
 
 **Prevention**:
 - Always click "Stop Container" before closing the app
-- Wait for the stop operation to complete before quitting
+- Wait for the cleanup to complete (uses `CleanupCoordinator` with phased timeouts)
 
 ---
 
@@ -573,7 +716,12 @@ Contributions are welcome! This project is educational and demonstrates:
 
 ### Areas for Improvement
 
-- [ ] Better error recovery for Step 10 failures
+- [x] Better error recovery for Step 10 failures (timeout + crash detection + diagnostic reports)
+- [x] Modular architecture with composition pattern (12 focused modules)
+- [x] Type-safe state machine for container lifecycle
+- [x] Multi-channel communication (HTTP, Vsock, Unix Socket)
+- [x] Phased cleanup with per-component timeouts
+- [x] Diagnostic reports with system info capture
 - [ ] Support for more container image formats
 - [ ] Persistent container storage
 - [ ] Multiple concurrent containers
