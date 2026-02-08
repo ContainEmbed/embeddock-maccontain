@@ -17,22 +17,58 @@
 import AppKit
 import SwiftUI
 
+/// Application delegate for handling system-level events.
+///
+/// Handles file opening events (drag-drop, double-click) and application lifecycle.
+/// Connected to SwiftUI via `@NSApplicationDelegateAdaptor` in `HelloWorldApp`.
 class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
+    
+    /// URL of a file that was opened before the app was fully ready.
+    /// This is processed by `HelloWorldApp.handlePendingFile()` once the main view appears.
+    var pendingFileURL: URL?
+    
+    /// Supported file extensions for container operations.
+    private static let supportedExtensions: Set<String> = ["js", "tar", "tgz", "gz"]
+    
+    // MARK: - File Opening
+    
+    /// Handle file opened via Finder (double-click or drag-drop to dock icon).
     func application(_ sender: NSApplication, openFile filename: String) -> Bool {
         let url = URL(fileURLWithPath: filename)
-        guard url.pathExtension == "js" else { return false }
+        let ext = url.pathExtension.lowercased()
         
-        // We need the container manager from the scene, but this is called before it's available
-        // Store the URL and handle it later
+        guard Self.supportedExtensions.contains(ext) else {
+            print("⚠️ [AppDelegate] Unsupported file type: \(ext)")
+            return false
+        }
+        
+        print("📂 [AppDelegate] File opened: \(filename)")
+        
+        // Store for later processing once the SwiftUI view is ready
         pendingFileURL = url
         return true
     }
     
-    var pendingFileURL: URL?
+    /// Handle multiple files opened at once.
+    func application(_ sender: NSApplication, openFiles filenames: [String]) {
+        // Only process the first file
+        if let first = filenames.first {
+            _ = application(sender, openFile: first)
+        }
+        sender.reply(toOpenOrPrint: .success)
+    }
     
+    // MARK: - JavaScript File Handler
+    
+    /// Start a Node.js container with the given JavaScript file.
+    /// - Parameters:
+    ///   - url: The JavaScript file URL to run.
+    ///   - containerManager: The container manager to use.
     func openJavaScriptFile(_ url: URL, containerManager: ContainerManager) {
         Task { @MainActor in
             do {
+                print("🟢 [AppDelegate] Starting Node.js container with: \(url.lastPathComponent)")
+                
                 try await containerManager.startNodeServer(
                     jsFile: url,
                     imageName: "node:20-alpine",
@@ -44,9 +80,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 if let urlToOpen = URL(string: "http://localhost:3000") {
                     NSWorkspace.shared.open(urlToOpen)
                 }
+                
+                print("✅ [AppDelegate] Node.js container started successfully")
             } catch {
+                print("❌ [AppDelegate] Failed to start container: \(error)")
+                
                 let alert = NSAlert()
-                alert.messageText = "Failed to start container"
+                alert.messageText = "Failed to start Node.js container"
                 alert.informativeText = error.localizedDescription
                 alert.alertStyle = .critical
                 alert.runModal()
@@ -54,7 +94,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         }
     }
     
+    // MARK: - Application Lifecycle
+    
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        print("🚀 [AppDelegate] Application did finish launching")
+    }
+    
     func applicationWillTerminate(_ notification: Notification) {
-        // Container cleanup handled by the manager's deinit
+        print("👋 [AppDelegate] Application will terminate")
+        // Container cleanup is handled by ContainerOrchestrator's deinit/cleanup
+    }
+    
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        // Keep app running even when window is closed (can reopen via dock)
+        return false
     }
 }
