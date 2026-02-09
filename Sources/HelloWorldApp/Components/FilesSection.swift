@@ -20,9 +20,7 @@ import SwiftUI
 
 /// Provides file system browsing and process viewing for the container.
 struct FilesSection: View {
-    @ObservedObject var containerManager: ContainerManager
-    @Binding var commandOutput: String
-    @Binding var isExecutingCommand: Bool
+    @ObservedObject var viewModel: ContainerViewModel
     
     var body: some View {
         VStack(spacing: 15) {
@@ -36,25 +34,25 @@ struct FilesSection: View {
                         path: "/",
                         icon: "folder",
                         color: .blue,
-                        action: { browseDirectory("/") }
+                        action: { Task { await viewModel.browseDirectory("/") } }
                     )
                     
                     DirectoryButton(
                         path: "/app",
                         icon: "folder.badge.gearshape",
                         color: .purple,
-                        action: { browseDirectory("/app") }
+                        action: { Task { await viewModel.browseDirectory("/app") } }
                     )
                     
                     DirectoryButton(
                         path: "/tmp",
                         icon: "folder.badge.questionmark",
                         color: .orange,
-                        action: { browseDirectory("/tmp") }
+                        action: { Task { await viewModel.browseDirectory("/tmp") } }
                     )
                 }
                 
-                Button(action: showProcesses) {
+                Button(action: { Task { await viewModel.showProcesses() } }) {
                     HStack {
                         Image(systemName: "cpu")
                         Text("Show Running Processes")
@@ -66,7 +64,7 @@ struct FilesSection: View {
                     .cornerRadius(10)
                 }
                 .buttonStyle(.plain)
-                .disabled(isExecutingCommand)
+                .disabled(viewModel.isExecutingCommand)
                 
                 HStack(spacing: 10) {
                     Button(action: viewBootLog) {
@@ -89,12 +87,12 @@ struct FilesSection: View {
                         }
                         .frame(maxWidth: .infinity)
                         .padding()
-                        .background(containerManager.lastDiagnosticReport != nil ? Color.orange : Color.gray)
+                        .background(viewModel.lastDiagnosticReport != nil ? Color.orange : Color.gray)
                         .foregroundColor(.white)
                         .cornerRadius(10)
                     }
                     .buttonStyle(.plain)
-                    .disabled(containerManager.lastDiagnosticReport == nil)
+                    .disabled(viewModel.lastDiagnosticReport == nil)
                 }
             }
             .padding()
@@ -102,10 +100,10 @@ struct FilesSection: View {
             .cornerRadius(10)
             
             // Output display
-            if !commandOutput.isEmpty {
+            if !viewModel.commandOutput.isEmpty {
                 CommandOutputView(
-                    output: commandOutput,
-                    onClear: { commandOutput = "" }
+                    output: viewModel.commandOutput,
+                    onClear: { viewModel.commandOutput = "" }
                 )
             }
         }
@@ -114,61 +112,23 @@ struct FilesSection: View {
     
     // MARK: - Actions
     
-    private func browseDirectory(_ path: String) {
-        print("📂 [FilesSection] Browsing directory: \(path)")
-        isExecutingCommand = true
-        
-        Task { @MainActor in
-            do {
-                let files = try await containerManager.listContainerDirectory(path)
-                commandOutput = """
-                📁 Directory: \(path)
-                
-                \(files.joined(separator: "\n"))
-                """
-            } catch {
-                commandOutput = "❌ Error browsing \(path): \(error.localizedDescription)"
-            }
-            isExecutingCommand = false
-        }
-    }
-    
-    private func showProcesses() {
-        print("🔄 [FilesSection] Getting container processes")
-        isExecutingCommand = true
-        
-        Task { @MainActor in
-            do {
-                let processes = try await containerManager.getContainerProcesses()
-                commandOutput = """
-                🔄 Running Processes:
-                
-                \(processes)
-                """
-            } catch {
-                commandOutput = "❌ Error: \(error.localizedDescription)"
-            }
-            isExecutingCommand = false
-        }
-    }
-    
     private func viewBootLog() {
         print("📋 [FilesSection] Viewing boot log")
-        if let logContent = containerManager.readLogFile(name: "bootlog.txt", lastLines: 50) {
-            commandOutput = """
+        if let logContent = viewModel.readLogFile(name: "bootlog.txt", lastLines: 50) {
+            viewModel.commandOutput = """
             📋 Boot Log (last 50 lines):
             
             \(logContent)
             """
         } else {
-            commandOutput = "ℹ️ No boot log available yet."
+            viewModel.commandOutput = "ℹ️ No boot log available yet."
         }
     }
     
     private func showLastDiagnostics() {
         print("🔍 [FilesSection] Showing last diagnostic report")
-        guard let report = containerManager.lastDiagnosticReport else {
-            commandOutput = "ℹ️ No diagnostic report available."
+        guard let report = viewModel.lastDiagnosticReport else {
+            viewModel.commandOutput = "ℹ️ No diagnostic report available."
             return
         }
         
@@ -204,10 +164,10 @@ struct FilesSection: View {
             output += "\nBoot Log (tail):\n\(tail)\n"
         }
         
-        commandOutput = output
+        viewModel.commandOutput = output
         
         // Also re-print to log for debugging
-        containerManager.reprintLastDiagnosticReport()
+        viewModel.reprintLastDiagnosticReport()
     }
 }
 

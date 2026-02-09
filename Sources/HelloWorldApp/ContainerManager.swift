@@ -3,7 +3,6 @@ import Combine
 import Containerization
 import ContainerizationOCI
 import ContainerizationArchive
-import AppKit
 import ContainerizationEXT4
 import ContainerizationError
 import Logging
@@ -16,20 +15,21 @@ typealias OCIMount = ContainerizationOCI.Mount
 typealias ContainerCommunicationManager = CommunicationManager
 
 @MainActor
-class ContainerManager: ObservableObject {
-    @Published private(set) var stateMachine = ContainerStateMachine()
-    @Published var statusMessage = "Ready"
-    @Published var containerURL: String?
-    @Published var isCommunicationReady = false
-    @Published var portForwardingStatus: ForwardingStatus = .inactive
-    @Published private(set) var lastDiagnosticReport: DiagnosticReport?
+final class ContainerManager {
+    // MARK: - Public State (read-only)
 
-    /// Container active state derived from the state machine.
-    /// True for ANY active state (initializing, starting, running, stopping) — not just `.running`.
-    var isRunning: Bool { !stateMachine.state.canStart }
+    private(set) var status: ContainerStatus = .idle
+    private(set) var containerURL: String?
+    private(set) var isCommunicationReady: Bool = false
+    private(set) var lastDiagnosticReport: DiagnosticReport?
 
-    /// Forwards state machine changes to ContainerManager's objectWillChange for SwiftUI.
-    private var stateMachineCancellable: AnyCancellable?
+    /// Container active state derived from the unified status.
+    /// True for ANY active state (initializing, running, stopping) — not just `.running`.
+    var isRunning: Bool { status.isActive }
+
+    // MARK: - Delegate
+
+    weak var delegate: ContainerManagerDelegate?
 
     private var currentPod: LinuxPod?
     private var imageStore: ImageStore?
@@ -64,16 +64,11 @@ class ContainerManager: ObservableObject {
         var logger = Logger(label: "com.example.HelloWorldApp")
         logger.logLevel = .debug
         self.logger = logger
-
-        // Forward state machine changes to ContainerManager so SwiftUI views update immediately
-        stateMachineCancellable = stateMachine.objectWillChange.sink { [weak self] _ in
-            self?.objectWillChange.send()
-        }
     }
 
     func initialize() async throws {
         logger.info("🔧 [ContainerManager] Initializing...")
-        statusMessage = "Initializing image store..."
+        reportProgress("Initializing image store...")
 
         self.imageStore = try ImageStore(path: storeURL)
         self.eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 2)
@@ -126,7 +121,7 @@ class ContainerManager: ObservableObject {
             logger: logger
         )
 
-        statusMessage = "Ready"
+        reportProgress("Ready")
         logger.info("✅ [ContainerManager] Initialization complete")
     }
 
@@ -141,23 +136,18 @@ class ContainerManager: ObservableObject {
         try await ensureStoppedIfRunning()
         try checkPrerequisites()
 
-        stateMachine.transitionToStep(.extractingImage)
+        updateStatus(.initializing(step: .extractingImage))
         defer { cleanupOnFailure() }
 
         do {
             // Phase 1: Launch via StartupCoordinator
             let pod = try await launchFromImage(imageFile: imageFile, port: port)
             self.currentPod = pod
-            stateMachine.markRunning()
+            updateStatus(.running(health: .healthy, forwarding: .inactive))
 
             // Phase 2: Post-launch (health check, communication, port forwarding)
             let result = await performPostLaunch(pod: pod, options: .imageStart(port: port))
             applyPostLaunchResult(result, port: port)
-
-            if !result.isHealthy, let warning = result.healthWarning {
-                stateMachine.markUnhealthy(reason: warning)
-                statusMessage = "⚠️ Container running but \(warning)"
-            }
         } catch {
             handleLaunchFailure(error: error, phase: "startContainerFromImage")
             throw error
@@ -171,20 +161,18 @@ class ContainerManager: ObservableObject {
 
         try checkPrerequisites()
 
-        stateMachine.transitionToStep(.extractingImage)
+        updateStatus(.initializing(step: .extractingImage))
         defer { cleanupOnFailure() }
 
         do {
             // Phase 1: Launch via NodeServerCoordinator
             let pod = try await launchNodeServer(jsFile: jsFile, imageName: imageName, port: port)
             self.currentPod = pod
-            stateMachine.markRunning()
+            updateStatus(.running(health: .healthy, forwarding: .inactive))
 
             // Phase 2: Post-launch (communication, port forwarding)
             let result = await performPostLaunch(pod: pod, options: .nodeServer(port: port))
             applyPostLaunchResult(result, port: port)
-
-            statusMessage = "✅ Node.js container running at \(result.containerURL)"
         } catch {
             handleLaunchFailure(error: error, phase: "startNodeServer")
             throw error
@@ -197,8 +185,8 @@ class ContainerManager: ObservableObject {
             return
         }
 
-        stateMachine.markStopping()
-        statusMessage = "Stopping container..."
+        updateStatus(.stopping)
+        reportProgress("Stopping container...")
 
         if let coordinator = cleanupCoordinator {
             let completed = await coordinator.performCleanupWithMasterTimeout(
@@ -221,10 +209,8 @@ class ContainerManager: ObservableObject {
         communicationManager = nil
         containerOperations?.configure(pod: nil, communicationManager: nil, diagnosticsHelper: nil)
         containerURL = nil
-        stateMachine.reset()
         isCommunicationReady = false
-        portForwardingStatus = .inactive
-        statusMessage = "Container stopped"
+        updateStatus(.idle)
     }
 
     // MARK: - Lifecycle Helpers (Composition)
@@ -232,8 +218,8 @@ class ContainerManager: ObservableObject {
     /// Stops any existing running container before starting a new one.
     private func ensureStoppedIfRunning() async throws {
         guard isRunning else { return }
-        statusMessage = "Stopping existing container..."
-        stateMachine.markStopping()
+        reportProgress("Stopping existing container...")
+        updateStatus(.stopping)
         do {
             try await stopContainer()
         } catch {
@@ -243,13 +229,12 @@ class ContainerManager: ObservableObject {
 
     /// Shared prerequisite check for both launch paths.
     private func checkPrerequisites() throws {
-        stateMachine.transitionToStep(.checkingPrerequisites)
-        statusMessage = "Checking prerequisites..."
+        updateStatus(.initializing(step: .checkingPrerequisites))
+        reportProgress("Checking prerequisites...")
         do {
             try prerequisiteChecker?.checkAll()
         } catch {
-            stateMachine.markFailed(error: "Missing prerequisites")
-            statusMessage = "❌ Missing prerequisites - check logs"
+            updateStatus(.failed(error: "Missing prerequisites"))
             throw error
         }
     }
@@ -259,7 +244,7 @@ class ContainerManager: ObservableObject {
         guard let coordinator = startupCoordinator else {
             throw ContainerizationError(.notFound, message: "Startup coordinator not initialized")
         }
-        coordinator.onProgress = { [weak self] msg in self?.statusMessage = msg }
+        coordinator.onProgress = { [weak self] msg in self?.reportProgress(msg) }
         return try await coordinator.startFromImage(imageFile: imageFile, port: port)
     }
 
@@ -268,7 +253,7 @@ class ContainerManager: ObservableObject {
         guard let coordinator = nodeServerCoordinator else {
             throw ContainerizationError(.notFound, message: "Node server coordinator not initialized")
         }
-        coordinator.onProgress = { [weak self] msg in self?.statusMessage = msg }
+        coordinator.onProgress = { [weak self] msg in self?.reportProgress(msg) }
         return try await coordinator.start(jsFile: jsFile, imageName: imageName, port: port)
     }
 
@@ -296,35 +281,36 @@ class ContainerManager: ObservableObject {
         self.isCommunicationReady = result.isCommunicationReady
         self.portForwarder = result.portForwarder
         self.containerURL = result.containerURL
-        self.portForwardingStatus = result.portForwardingStatus
+
+        // Map health and forwarding into unified status
+        let health: ContainerStatus.HealthState = result.isHealthy
+            ? .healthy
+            : .unhealthy(reason: result.healthWarning ?? "Unknown")
+        let forwarding = mapForwardingStatus(result.portForwardingStatus)
+        updateStatus(.running(health: health, forwarding: forwarding))
 
         if result.portForwarder != nil {
-            // Observe port forwarder status changes
-            Task { @MainActor [weak self] in
-                guard let forwarder = self?.portForwarder else { return }
-                for await _ in forwarder.$status.values {
-                    self?.portForwardingStatus = forwarder.status
-                }
-            }
+            observePortForwarder()
         }
 
-        statusMessage = "✅ Container running at \(result.containerURL)"
+        notifyDelegate()
     }
 
     /// Handles launch failures — marks failed, captures diagnostics.
     private func handleLaunchFailure(error: Error, phase: String) {
-        stateMachine.markFailed(error: error.localizedDescription)
-        statusMessage = "❌ Failed: \(error.localizedDescription)"
+        updateStatus(.failed(error: error.localizedDescription))
         if let pod = currentPod, let diag = diagnosticsHelper {
             Task {
-                lastDiagnosticReport = await diag.printDiagnostics(pod: pod, phase: phase, error: error)
+                let report = await diag.printDiagnostics(pod: pod, phase: phase, error: error)
+                self.lastDiagnosticReport = report
+                self.delegate?.containerManager(self, didProduceDiagnosticReport: report)
             }
         }
     }
 
-    /// Cleanup guard: if we're not running after a deferred block, stop the pod.
+    /// Cleanup guard: if we’re not running after a deferred block, stop the pod.
     private func cleanupOnFailure() {
-        if !isRunning {
+        if status.canStart {
             Task { try? await self.currentPod?.stop(); self.currentPod = nil }
         }
     }
@@ -337,7 +323,7 @@ class ContainerManager: ObservableObject {
             throw ContainerizationError(.invalidState, message: "No container is running")
         }
 
-        portForwardingStatus = .starting
+        updateForwarding(.starting)
 
         let forwarder = TcpPortForwarder(
             hostPort: hostPort,
@@ -350,16 +336,12 @@ class ContainerManager: ObservableObject {
         do {
             try await forwarder.start()
             self.portForwarder = forwarder
-            self.portForwardingStatus = forwarder.status
             self.containerURL = "http://localhost:\(hostPort)"
-
-            Task { @MainActor [weak self] in
-                for await _ in forwarder.$status.values {
-                    self?.portForwardingStatus = forwarder.status
-                }
-            }
+            updateForwarding(mapForwardingStatus(forwarder.status))
+            observePortForwarder()
+            notifyDelegate()
         } catch {
-            portForwardingStatus = .error(error.localizedDescription)
+            updateForwarding(.error(error.localizedDescription))
             throw error
         }
     }
@@ -368,7 +350,7 @@ class ContainerManager: ObservableObject {
         if let forwarder = portForwarder {
             await forwarder.stop()
             portForwarder = nil
-            portForwardingStatus = .inactive
+            updateForwarding(.inactive)
         }
     }
 
@@ -488,7 +470,7 @@ class ContainerManager: ObservableObject {
             throw ContainerizationError(.notFound, message: "Image service not initialized")
         }
         return try await service.pullImage(reference: reference, platform: platform) { [weak self] msg in
-            Task { @MainActor in self?.statusMessage = msg }
+            Task { @MainActor in self?.reportProgress(msg) }
         }
     }
 
@@ -497,7 +479,55 @@ class ContainerManager: ObservableObject {
             throw ContainerizationError(.notFound, message: "Image service not initialized")
         }
         return try await service.prepareRootfs(from: image, platform: platform) { [weak self] msg in
-            Task { @MainActor in self?.statusMessage = msg }
+            Task { @MainActor in self?.reportProgress(msg) }
         }
+    }
+
+    // MARK: - Private State Helpers
+
+    /// Update the unified container status and notify the delegate.
+    private func updateStatus(_ newStatus: ContainerStatus) {
+        guard status != newStatus else { return }
+        #if DEBUG
+        print("🔄 [ContainerManager] \(status) → \(newStatus)")
+        #endif
+        status = newStatus
+        notifyDelegate()
+    }
+
+    /// Update only the forwarding sub-state within a running status.
+    private func updateForwarding(_ forwarding: ContainerStatus.ForwardingState) {
+        guard case .running(let health, _) = status else { return }
+        updateStatus(.running(health: health, forwarding: forwarding))
+    }
+
+    /// Map TcpPortForwarder's ForwardingStatus to unified ContainerStatus.ForwardingState.
+    private func mapForwardingStatus(_ fs: ForwardingStatus) -> ContainerStatus.ForwardingState {
+        switch fs {
+        case .inactive: return .inactive
+        case .starting: return .starting
+        case .active(let n): return .active(connections: n)
+        case .error(let msg): return .error(msg)
+        }
+    }
+
+    /// Observe the port forwarder's status changes and update unified status.
+    private func observePortForwarder() {
+        Task { @MainActor [weak self] in
+            guard let self, let forwarder = self.portForwarder else { return }
+            for await _ in forwarder.$status.values {
+                self.updateForwarding(self.mapForwardingStatus(forwarder.status))
+            }
+        }
+    }
+
+    /// Notify the delegate of state changes.
+    private func notifyDelegate() {
+        delegate?.containerManagerDidUpdate(self)
+    }
+
+    /// Send an ephemeral progress message to the delegate.
+    private func reportProgress(_ message: String) {
+        delegate?.containerManager(self, didUpdateProgress: message)
     }
 }
