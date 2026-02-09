@@ -77,12 +77,18 @@ This project is based on [Apple's Containerization framework](https://github.com
 │  ┌─────────────────────────────────────────────────────────────────────────┐│
 │  │                        HelloWorldApp (SwiftUI)                          ││
 │  │                                                                         ││
-│  │  ┌─────────────┐  ┌────────────────────┐  ┌──────────────────────────┐ ││
-│  │  │ Views &     │  │ ContentViewModel   │  │ ContainerManager         │ ││
-│  │  │ Components  │──│ (MVVM Binding)     │──│ (Thin Orchestrator)      │ ││
-│  │  └─────────────┘  └────────────────────┘  └──────────┬───────────────┘ ││
-│  │                                                      │                  ││
-│  │  ┌───────────────────────────────────────────────────┴────────────────┐ ││
+│  │  ┌─────────────┐     ┌────────────────────────┐                        ││
+│  │  │ Views &     │◀─── │ ContainerViewModel     │                        ││
+│  │  │ Components  │     │ (@Published UI state)  │                        ││
+│  │  └─────────────┘     └────────┬───────────────┘                        ││
+│  │                          owns │ ▲ ContainerManagerDelegate              ││
+│  │                               ▼ │ (callbacks)                           ││
+│  │                       ┌───────────────────────┐                        ││
+│  │                       │ ContainerManager      │                        ││
+│  │                       │ (Pure Model / Logic)  │                        ││
+│  │                       └──────────┬────────────┘                        ││
+│  │                                  │                                      ││
+│  │  ┌───────────────────────────────┴────────────────────────────────────┐ ││
 │  │  │                   Composition Modules                              │ ││
 │  │  │                                                                    │ ││
 │  │  │  Lifecycle/         Image/          Container/       Diagnostics/  │ ││
@@ -128,9 +134,27 @@ This project is based on [Apple's Containerization framework](https://github.com
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Design Pattern: Composition-Based Orchestration
+### Design Pattern: Delegate-Based MVVM with Composition
 
-`ContainerManager` is a **thin orchestrator** that delegates every responsibility to focused, single-purpose modules. Both container launch paths (`startContainerFromImage` and `startNodeServer`) follow the same 3-phase pattern:
+The app follows a strict **Model–ViewModel–View** pattern with a delegate bridge:
+
+```
+Views (SwiftUI)  ←──@Published──  ContainerViewModel  ──owns──▶  ContainerManager (Model)
+                                         ▲                              │
+                                         │   ContainerManagerDelegate   │
+                                         └──────────── callbacks ───────┘
+```
+
+- **ContainerManager** is a **pure model** — no `ObservableObject`, no `@Published`. It holds
+  all business logic and notifies its `delegate` of state changes via
+  `ContainerManagerDelegate`.
+- **ContainerViewModel** owns the manager privately, implements the delegate protocol, and
+  translates manager state into `@Published` UI properties. All views bind to it.
+- **ContainerStatus** is a **unified enum** that merges container lifecycle, health, and
+  port forwarding state into a single source of truth with nested `HealthState` and
+  `ForwardingState` sub-types.
+
+Both container launch paths (`startContainerFromImage` and `startNodeServer`) follow the same 3-phase pattern inside `ContainerManager`:
 
 ```
 1. Pre-flight  →  ensureStoppedIfRunning() / checkPrerequisites()
@@ -144,7 +168,8 @@ This project is based on [Apple's Containerization framework](https://github.com
 
 | Module | Role |
 |--------|------|
-| **ContainerStateMachine** | Type-safe state machine (idle → initializing → running → stopping → failed) |
+| **ContainerStatus** | Unified status enum with nested `HealthState` and `ForwardingState` sub-types |
+| **ContainerManagerDelegate** | Protocol for model → ViewModel callbacks (state, progress, diagnostics) |
 | **StartupCoordinator** | Multi-step OCI image → container launch pipeline |
 | **NodeServerCoordinator** | Multi-step Node.js pull → configure → launch pipeline |
 | **PostLaunchHandler** | Shared post-launch steps: health check, communication setup, port forwarding |
@@ -194,8 +219,8 @@ This project is based on [Apple's Containerization framework](https://github.com
 
 | Module | Location | Role |
 |--------|----------|------|
-| **HelloWorldApp** | `App/` | SwiftUI app entry point |
-| **ContentViewModel** | `ViewModels/` | MVVM view model for main content |
+| **HelloWorldApp** | `App/` | SwiftUI app entry point, creates `ContainerViewModel` |
+| **ContainerViewModel** | `ViewModels/` | Primary ViewModel — owns `ContainerManager`, exposes all `@Published` UI state, implements `ContainerManagerDelegate` |
 | **ContentView** | `Views/` | Main container management interface |
 | **SettingsView** | `Views/` | Port and configuration settings |
 | **ControlSection** | `Components/` | Start/stop buttons, image picker |
@@ -449,14 +474,15 @@ embeddock-maccontain/
 │
 └── Sources/
     ├── HelloWorldApp/                     # ── Main Application ──
-    │   ├── ContainerManager.swift         # Thin orchestrator (composition root)
+    │   ├── ContainerManager.swift         # Pure model — business logic, delegate callbacks
     │   ├── AppDelegate.swift              # macOS app delegate, CLI auto-start
     │   │
     │   ├── App/
     │   │   └── HelloWorldApp.swift        # @main SwiftUI entry point
     │   │
     │   ├── Lifecycle/                     # Container lifecycle coordination
-    │   │   ├── ContainerState.swift       # State machine (ContainerState, StartupStep)
+    │   │   ├── ContainerState.swift       # Unified ContainerStatus enum & StartupStep
+    │   │   ├── ContainerManagerDelegate.swift # Model → ViewModel callback protocol
     │   │   ├── StartupCoordinator.swift   # OCI image → container pipeline
     │   │   ├── NodeServerCoordinator.swift # Node.js pull → container pipeline
     │   │   ├── PostLaunchHandler.swift    # Post-launch: health, comms, port forwarding
@@ -494,7 +520,7 @@ embeddock-maccontain/
     │   │   └── SettingsView.swift         # Port & configuration settings
     │   │
     │   ├── ViewModels/                    # MVVM view models
-    │   │   └── ContentViewModel.swift     # Main view model
+    │   │   └── ContainerViewModel.swift   # Primary ViewModel (owns ContainerManager, @Published UI state)
     │   │
     │   ├── Components/                    # Reusable SwiftUI sections
     │   │   ├── ControlSection.swift       # Start/stop buttons, image picker
@@ -719,6 +745,8 @@ Contributions are welcome! This project is educational and demonstrates:
 - [x] Better error recovery for Step 10 failures (timeout + crash detection + diagnostic reports)
 - [x] Modular architecture with composition pattern (12 focused modules)
 - [x] Type-safe state machine for container lifecycle
+- [x] Delegate-based MVVM — ContainerManager as pure model, ContainerViewModel for UI
+- [x] Unified ContainerStatus enum (lifecycle + health + forwarding)
 - [x] Multi-channel communication (HTTP, Vsock, Unix Socket)
 - [x] Phased cleanup with per-component timeouts
 - [x] Diagnostic reports with system info capture

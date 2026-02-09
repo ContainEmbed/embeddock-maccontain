@@ -21,7 +21,7 @@ import AppKit
 
 /// Displays the current container status, port forwarding status, and container URL.
 struct StatusSection: View {
-    @ObservedObject var containerManager: ContainerManager
+    @ObservedObject var viewModel: ContainerViewModel
     @State private var activeChannels: [CommunicationType] = []
     
     var body: some View {
@@ -29,16 +29,16 @@ struct StatusSection: View {
             // Main status row
             HStack {
                 Circle()
-                    .fill(containerManager.isRunning ? Color.green : Color.gray)
+                    .fill(viewModel.isRunning ? Color.green : Color.gray)
                     .frame(width: 12, height: 12)
                 
-                Text(containerManager.statusMessage)
+                Text(viewModel.statusMessage)
                     .font(.system(size: 14, weight: .medium))
                 
                 Spacer()
                 
-                if containerManager.isCommunicationReady {
-                    CommunicationChannelsIndicator(channels: activeChannels)
+                if viewModel.isCommunicationReady {
+                    CommunicationChannelsIndicator(channels: viewModel.activeChannels)
                 }
             }
             .padding()
@@ -46,10 +46,10 @@ struct StatusSection: View {
             .cornerRadius(10)
             
             // Port forwarding status
-            if containerManager.isRunning {
+            if viewModel.isRunning {
                 HStack {
                     PortForwardingStatusView(
-                        status: containerManager.portForwardingStatus,
+                        status: viewModel.forwardingState,
                         onRetry: { /* Retry handled by parent */ }
                     )
                     Spacer()
@@ -60,29 +60,19 @@ struct StatusSection: View {
             }
             
             // System info (from DiagnosticsHelper.getSystemInfo)
-            if containerManager.isRunning {
-                SystemInfoRow(systemInfo: containerManager.getSystemInfo())
+            if viewModel.isRunning {
+                SystemInfoRow(systemInfo: viewModel.getSystemInfo())
             }
 
             // Container URL
-            if let url = containerManager.containerURL {
+            if let url = viewModel.containerURL {
                 ContainerURLRow(
                     url: url,
-                    isActive: containerManager.portForwardingStatus.isActive
+                    isActive: viewModel.isPortForwardingActive
                 )
             }
         }
         .padding(.horizontal, 40)
-        .task {
-            await refreshChannels()
-        }
-        .onChange(of: containerManager.isCommunicationReady) {
-            Task { await refreshChannels() }
-        }
-    }
-    
-    private func refreshChannels() async {
-        activeChannels = await containerManager.getActiveChannels()
     }
 }
 
@@ -182,7 +172,7 @@ struct SystemInfoRow: View {
 
 /// Displays the port forwarding status with an indicator and optional retry button.
 struct PortForwardingStatusView: View {
-    let status: ForwardingStatus
+    let status: ContainerStatus.ForwardingState
     let onRetry: () -> Void
     
     var body: some View {

@@ -1,0 +1,397 @@
+//===----------------------------------------------------------------------===//
+// Copyright © 2025 Apple Inc. and the Containerization project authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//   https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//===----------------------------------------------------------------------===//
+
+import SwiftUI
+import AppKit
+import UniformTypeIdentifiers
+import ContainerizationOCI
+import Containerization
+
+// MARK: - Container View Model
+
+/// The primary ViewModel for all container-related UI.
+///
+/// Owns a `ContainerManager` instance privately and exposes all
+/// container state as `@Published` properties for SwiftUI views.
+/// Implements `ContainerManagerDelegate` to receive state updates
+/// from the manager and translate them into UI-appropriate values.
+///
+/// Views should interact exclusively with this ViewModel — never
+/// with `ContainerManager` directly.
+@MainActor
+final class ContainerViewModel: ObservableObject {
+
+    // MARK: - Container State (from delegate)
+
+    @Published private(set) var status: ContainerStatus = .idle
+    @Published private(set) var statusMessage: String = "Ready"
+    @Published private(set) var containerURL: String?
+    @Published private(set) var isCommunicationReady: Bool = false
+    @Published private(set) var lastDiagnosticReport: DiagnosticReport?
+    @Published private(set) var activeChannels: [CommunicationType] = []
+
+    // MARK: - UI State
+
+    @Published var showSettings = false
+    @Published var imageName = "node:20-alpine"
+    @Published var port = "3000"
+    @Published var apiResponse = ""
+    @Published var isCheckingAPI = false
+    @Published var commandInput = ""
+    @Published var commandOutput = ""
+    @Published var isExecutingCommand = false
+    @Published var selectedTab = 0
+
+    // MARK: - Computed Properties
+
+    /// True for any active state (initializing, running, stopping).
+    var isRunning: Bool { status.isActive }
+    var canStart: Bool { status.canStart }
+    var canStop: Bool { status.canStop }
+
+    var portForwardingDescription: String {
+        status.forwardingState?.description ?? "Inactive"
+    }
+
+    var isPortForwardingActive: Bool {
+        status.forwardingState?.isActive ?? false
+    }
+
+    /// The forwarding sub-state for status views.
+    var forwardingState: ContainerStatus.ForwardingState {
+        status.forwardingState ?? .inactive
+    }
+
+    var statusColor: Color {
+        switch status {
+        case .idle: return .gray
+        case .initializing: return .yellow
+        case .running(let health, _):
+            return health == .healthy ? .green : .orange
+        case .stopping: return .yellow
+        case .failed: return .red
+        }
+    }
+
+    var forwardingStatusColor: Color {
+        guard let forwarding = status.forwardingState else { return .gray }
+        switch forwarding {
+        case .inactive: return .gray
+        case .starting: return .yellow
+        case .active: return .green
+        case .error: return .red
+        }
+    }
+
+    // MARK: - Private
+
+    let containerManager: ContainerManager
+
+    // MARK: - Initialization
+
+    init() {
+        self.containerManager = ContainerManager()
+        self.containerManager.delegate = self
+    }
+
+    // MARK: - Lifecycle
+
+    func initialize() async {
+        do {
+            print("🔧 [ContainerViewModel] Initializing container manager...")
+            try await containerManager.initialize()
+            print("✅ [ContainerViewModel] Container manager initialized successfully")
+        } catch {
+            print("❌ [ContainerViewModel] Failed to initialize: \(error)")
+        }
+    }
+
+    // MARK: - Container Operations
+
+    func startContainerFromImage(imageFile: URL) async throws {
+        let targetPort = Int(port) ?? 3000
+        try await containerManager.startContainerFromImage(imageFile: imageFile, port: targetPort)
+    }
+
+    func startNodeServer(jsFile: URL) async throws {
+        let targetPort = Int(port) ?? 3000
+        try await containerManager.startNodeServer(jsFile: jsFile, imageName: imageName, port: targetPort)
+    }
+
+    func stopContainer() async throws {
+        try await containerManager.stopContainer()
+    }
+
+    func executeCommand(_ command: [String], workingDirectory: String? = nil) async throws -> ExecResult {
+        try await containerManager.executeCommand(command, workingDirectory: workingDirectory)
+    }
+
+    func checkContainerAPI() async {
+        isCheckingAPI = true
+        apiResponse = ""
+
+        do {
+            let targetPort = Int(port) ?? 3000
+            let result = try await containerManager.checkContainerAPI(port: targetPort)
+            apiResponse = """
+            ✅ Status: \(result.statusCode)
+            📦 Response Body:
+            \(result.body)
+            """
+        } catch {
+            apiResponse = """
+            ❌ Error:
+            \(error.localizedDescription)
+            
+            Details: \(String(describing: error))
+            """
+        }
+
+        isCheckingAPI = false
+    }
+
+    func httpRequest(
+        method: String = "GET",
+        path: String = "/",
+        body: Data? = nil,
+        headers: [String: String] = [:]
+    ) async throws -> HTTPResponse {
+        try await containerManager.httpRequest(method: method, path: path, body: body, headers: headers)
+    }
+
+    func readContainerFile(_ path: String) async throws -> String {
+        try await containerManager.readContainerFile(path)
+    }
+
+    func writeContainerFile(_ path: String, content: String) async throws {
+        try await containerManager.writeContainerFile(path, content: content)
+    }
+
+    func listContainerDirectory(_ path: String) async throws -> [String] {
+        try await containerManager.listContainerDirectory(path)
+    }
+
+    func getContainerEnvironment() async throws -> [String: String] {
+        try await containerManager.getContainerEnvironment()
+    }
+
+    func getContainerProcesses() async throws -> String {
+        try await containerManager.getContainerProcesses()
+    }
+
+    func isPortListening(_ port: Int) async throws -> Bool {
+        try await containerManager.isPortListening(port)
+    }
+
+    // MARK: - Port Forwarding
+
+    func startPortForwarding() async throws {
+        let targetPort = UInt16(Int(port) ?? 3000)
+        try await containerManager.startPortForwarding(
+            hostPort: targetPort,
+            containerPort: targetPort
+        )
+    }
+
+    func stopPortForwarding() async {
+        await containerManager.stopPortForwarding()
+    }
+
+    func retryPortForwarding() async {
+        do {
+            try await startPortForwarding()
+        } catch {
+            print("❌ [ContainerViewModel] Retry port forwarding failed: \(error)")
+        }
+    }
+
+    // MARK: - Diagnostics
+
+    func getSystemInfo() -> [String: String] {
+        containerManager.getSystemInfo()
+    }
+
+    func readLogFile(name: String, lastLines: Int = 100) -> String? {
+        containerManager.readLogFile(name: name, lastLines: lastLines)
+    }
+
+    func reprintLastDiagnosticReport() {
+        containerManager.reprintLastDiagnosticReport()
+    }
+
+    // MARK: - Image Operations
+
+    func pullNodeImage(reference: String, platform: Platform? = nil) async throws -> ContainerImage {
+        try await containerManager.pullNodeImage(reference: reference, platform: platform)
+    }
+
+    func prepareRootfs(from image: ContainerImage, platform: Platform) async throws -> URL {
+        try await containerManager.prepareRootfs(from: image, platform: platform)
+    }
+
+    // MARK: - File Picker
+
+    func openImageFilePicker() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+
+        var allowedTypes: [UTType] = []
+        if let tarType = UTType(filenameExtension: "tar") {
+            allowedTypes.append(tarType)
+        }
+        if let tgzType = UTType(filenameExtension: "tgz") {
+            allowedTypes.append(tgzType)
+        }
+        allowedTypes.append(.gzip)
+
+        panel.allowedContentTypes = allowedTypes
+        panel.message = "Select an OCI container image (tar, tar.gz, or tgz)"
+
+        panel.begin { [weak self] response in
+            guard let self else { return }
+            Task { @MainActor in
+                if response == .OK, let url = panel.url {
+                    do {
+                        try await self.startContainerFromImage(imageFile: url)
+                        try await Task.sleep(for: .seconds(2))
+                        if let urlToOpen = URL(string: "http://localhost:\(self.port)") {
+                            NSWorkspace.shared.open(urlToOpen)
+                        }
+                    } catch {
+                        self.showError(error)
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Command Execution
+
+    func executeCommandFromInput() async {
+        guard !commandInput.isEmpty else { return }
+        isExecutingCommand = true
+
+        do {
+            let args = commandInput.components(separatedBy: " ").filter { !$0.isEmpty }
+            let result = try await executeCommand(args)
+            commandOutput = """
+            $ \(commandInput)
+            
+            \(result.isSuccess ? result.stdoutString : "Error (exit code \(result.exitCode)):\n\(result.stderrString)")
+            """
+        } catch {
+            commandOutput = "❌ Error: \(error.localizedDescription)"
+        }
+
+        isExecutingCommand = false
+    }
+
+    func browseDirectory(_ path: String) async {
+        isExecutingCommand = true
+        do {
+            let files = try await listContainerDirectory(path)
+            commandOutput = """
+            📁 Directory: \(path)
+            
+            \(files.joined(separator: "\n"))
+            """
+        } catch {
+            commandOutput = "❌ Error browsing \(path): \(error.localizedDescription)"
+        }
+        isExecutingCommand = false
+    }
+
+    func showProcesses() async {
+        isExecutingCommand = true
+        do {
+            let processes = try await getContainerProcesses()
+            commandOutput = """
+            🔄 Running Processes:
+            
+            \(processes)
+            """
+        } catch {
+            commandOutput = "❌ Error: \(error.localizedDescription)"
+        }
+        isExecutingCommand = false
+    }
+
+    // MARK: - Helpers
+
+    func showError(_ error: Error) {
+        let alert = NSAlert()
+        alert.messageText = "Error"
+        alert.informativeText = error.localizedDescription
+        alert.alertStyle = .critical
+        alert.runModal()
+    }
+
+    // MARK: - Status Message Derivation
+
+    private func updateStatusMessage(for status: ContainerStatus) {
+        switch status {
+        case .idle:
+            statusMessage = "Ready"
+        case .initializing(let step):
+            statusMessage = step.statusMessage
+        case .running(let health, _):
+            switch health {
+            case .healthy:
+                if let url = containerURL {
+                    statusMessage = "✅ Container running at \(url)"
+                } else {
+                    statusMessage = "✅ Container running"
+                }
+            case .unhealthy(let reason):
+                statusMessage = "⚠️ Container running but \(reason)"
+            }
+        case .stopping:
+            statusMessage = "Stopping container..."
+        case .failed(let error):
+            statusMessage = "❌ Failed: \(error)"
+        }
+    }
+}
+
+// MARK: - ContainerManagerDelegate
+
+extension ContainerViewModel: ContainerManagerDelegate {
+    func containerManagerDidUpdate(_ manager: ContainerManager) {
+        status = manager.status
+        containerURL = manager.containerURL
+        isCommunicationReady = manager.isCommunicationReady
+
+        // Derive status message from status
+        updateStatusMessage(for: manager.status)
+
+        // Refresh communication channels
+        if isCommunicationReady {
+            Task { activeChannels = await manager.getActiveChannels() }
+        } else {
+            activeChannels = []
+        }
+    }
+
+    func containerManager(_ manager: ContainerManager, didUpdateProgress message: String) {
+        statusMessage = message
+    }
+
+    func containerManager(_ manager: ContainerManager, didProduceDiagnosticReport report: DiagnosticReport) {
+        lastDiagnosticReport = report
+    }
+}

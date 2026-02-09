@@ -64,16 +64,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// - Parameters:
     ///   - url: The JavaScript file URL to run.
     ///   - containerManager: The container manager to use.
-    func openJavaScriptFile(_ url: URL, containerManager: ContainerManager) {
+    func openJavaScriptFile(_ url: URL, viewModel: ContainerViewModel) {
         Task { @MainActor in
             do {
                 print("🟢 [AppDelegate] Starting Node.js container with: \(url.lastPathComponent)")
                 
-                try await containerManager.startNodeServer(
-                    jsFile: url,
-                    imageName: "node:20-alpine",
-                    port: 3000
-                )
+                try await viewModel.startNodeServer(jsFile: url)
                 
                 // Open browser after a short delay to let server start
                 try await Task.sleep(for: .seconds(2))

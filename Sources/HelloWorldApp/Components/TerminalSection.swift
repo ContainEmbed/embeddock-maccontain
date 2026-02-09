@@ -20,10 +20,7 @@ import SwiftUI
 
 /// Provides a terminal-like interface for executing commands in the container.
 struct TerminalSection: View {
-    @ObservedObject var containerManager: ContainerManager
-    @Binding var commandInput: String
-    @Binding var commandOutput: String
-    @Binding var isExecutingCommand: Bool
+    @ObservedObject var viewModel: ContainerViewModel
     
     var body: some View {
         VStack(spacing: 15) {
@@ -34,7 +31,7 @@ struct TerminalSection: View {
                 
                 HStack {
                     NSTextFieldWrapper(
-                        text: $commandInput,
+                        text: $viewModel.commandInput,
                         placeholder: "Enter command (e.g., ls -la, ps aux, env)",
                         onSubmit: executeCommand
                     )
@@ -44,11 +41,11 @@ struct TerminalSection: View {
                         Image(systemName: "play.fill")
                             .foregroundColor(.white)
                             .padding(8)
-                            .background(isExecutingCommand ? Color.gray : Color.green)
+                            .background(viewModel.isExecutingCommand ? Color.gray : Color.green)
                             .cornerRadius(6)
                     }
                     .buttonStyle(.borderless)
-                    .disabled(isExecutingCommand || commandInput.isEmpty)
+                    .disabled(viewModel.isExecutingCommand || viewModel.commandInput.isEmpty)
                 }
                 
                 // Quick command buttons
@@ -66,10 +63,10 @@ struct TerminalSection: View {
             .cornerRadius(10)
             
             // Command output
-            if !commandOutput.isEmpty {
+            if !viewModel.commandOutput.isEmpty {
                 CommandOutputView(
-                    output: commandOutput,
-                    onClear: { commandOutput = "" }
+                    output: viewModel.commandOutput,
+                    onClear: { viewModel.commandOutput = "" }
                 )
             }
         }
@@ -80,7 +77,7 @@ struct TerminalSection: View {
     
     private func quickCommandButton(_ command: String, icon: String) -> some View {
         Button(action: {
-            commandInput = command
+            viewModel.commandInput = command
             executeCommand()
         }) {
             HStack(spacing: 4) {
@@ -93,32 +90,13 @@ struct TerminalSection: View {
             .cornerRadius(4)
         }
         .buttonStyle(.plain)
-        .disabled(isExecutingCommand)
+        .disabled(viewModel.isExecutingCommand)
     }
     
     // MARK: - Actions
     
     private func executeCommand() {
-        guard !commandInput.isEmpty else { return }
-        
-        print("🖥️ [TerminalSection] Executing command: \(commandInput)")
-        isExecutingCommand = true
-        
-        Task { @MainActor in
-            do {
-                let args = commandInput.components(separatedBy: " ").filter { !$0.isEmpty }
-                let result = try await containerManager.executeCommand(args)
-                
-                commandOutput = """
-                $ \(commandInput)
-                
-                \(result.isSuccess ? result.stdoutString : "Error (exit code \(result.exitCode)):\n\(result.stderrString)")
-                """
-            } catch {
-                commandOutput = "❌ Error: \(error.localizedDescription)"
-            }
-            isExecutingCommand = false
-        }
+        Task { await viewModel.executeCommandFromInput() }
     }
 }
 

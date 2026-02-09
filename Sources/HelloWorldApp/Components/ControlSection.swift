@@ -22,16 +22,12 @@ import UniformTypeIdentifiers
 
 /// Main control section with buttons for container operations.
 struct ControlSection: View {
-    @ObservedObject var containerManager: ContainerManager
-    @Binding var port: String
-    @Binding var apiResponse: String
-    @Binding var isCheckingAPI: Bool
-    @Binding var showSettings: Bool
+    @ObservedObject var viewModel: ContainerViewModel
     
     var body: some View {
         VStack(spacing: 15) {
             // Open OCI Image button
-            Button(action: openFile) {
+            Button(action: { viewModel.openImageFilePicker() }) {
                 HStack {
                     Image(systemName: "cube.box")
                     Text("Open OCI Image")
@@ -43,31 +39,31 @@ struct ControlSection: View {
                 .cornerRadius(10)
             }
             .buttonStyle(.plain)
-            .disabled(containerManager.isRunning)
+            .disabled(viewModel.isRunning)
             
             // Check API button
-            Button(action: checkAPI) {
+            Button(action: { Task { await viewModel.checkContainerAPI() } }) {
                 HStack {
                     Image(systemName: "network")
                     Text("Check API")
                 }
                 .frame(maxWidth: .infinity)
                 .padding()
-                .background(containerManager.isRunning ? Color.green : Color.gray)
+                .background(viewModel.isRunning ? Color.green : Color.gray)
                 .foregroundColor(.white)
                 .cornerRadius(10)
             }
             .buttonStyle(.plain)
-            .disabled(!containerManager.isRunning || isCheckingAPI)
+            .disabled(!viewModel.isRunning || viewModel.isCheckingAPI)
             
             // API Response Display
-            if !apiResponse.isEmpty {
-                APIResponseView(response: apiResponse)
+            if !viewModel.apiResponse.isEmpty {
+                APIResponseView(response: viewModel.apiResponse)
             }
             
             // Stop Container button
-            if containerManager.isRunning {
-                Button(action: stopContainer) {
+            if viewModel.isRunning {
+                Button(action: { Task { try? await viewModel.stopContainer() } }) {
                     HStack {
                         Image(systemName: "stop.fill")
                         Text("Stop Container")
@@ -82,7 +78,7 @@ struct ControlSection: View {
             }
             
             // Settings button
-            Button(action: { showSettings.toggle() }) {
+            Button(action: { viewModel.showSettings.toggle() }) {
                 HStack {
                     Image(systemName: "gear")
                     Text("Settings")
@@ -96,94 +92,6 @@ struct ControlSection: View {
             .buttonStyle(.plain)
         }
         .padding(.horizontal, 40)
-    }
-    
-    // MARK: - Actions
-    
-    private func openFile() {
-        print("📂 [ControlSection] Open file action triggered")
-        let panel = NSOpenPanel()
-        panel.allowsMultipleSelection = false
-        panel.canChooseDirectories = false
-        panel.canChooseFiles = true
-        
-        var allowedTypes: [UTType] = []
-        if let tarType = UTType(filenameExtension: "tar") {
-            allowedTypes.append(tarType)
-        }
-        if let tgzType = UTType(filenameExtension: "tgz") {
-            allowedTypes.append(tgzType)
-        }
-        allowedTypes.append(.gzip)
-        
-        panel.allowedContentTypes = allowedTypes
-        panel.message = "Select an OCI container image (tar, tar.gz, or tgz)"
-        
-        panel.begin { response in
-            Task { @MainActor in
-                if response == .OK, let url = panel.url {
-                    do {
-                        try await containerManager.startContainerFromImage(
-                            imageFile: url,
-                            port: Int(port) ?? 3000
-                        )
-                        
-                        try await Task.sleep(for: .seconds(2))
-                        if let urlToOpen = URL(string: "http://localhost:\(port)") {
-                            NSWorkspace.shared.open(urlToOpen)
-                        }
-                    } catch {
-                        showError(error)
-                    }
-                }
-            }
-        }
-    }
-    
-    private func checkAPI() {
-        print("🌐 [ControlSection] Check API button clicked")
-        isCheckingAPI = true
-        apiResponse = ""
-        
-        Task { @MainActor in
-            do {
-                let targetPort = Int(port) ?? 3000
-                let result = try await containerManager.checkContainerAPI(port: targetPort)
-                
-                apiResponse = """
-                ✅ Status: \(result.statusCode)
-                📦 Response Body:
-                \(result.body)
-                """
-            } catch {
-                apiResponse = """
-                ❌ Error:
-                \(error.localizedDescription)
-                
-                Details: \(String(describing: error))
-                """
-            }
-            isCheckingAPI = false
-        }
-    }
-    
-    private func stopContainer() {
-        print("🛑 [ControlSection] Stop container button clicked")
-        Task { @MainActor in
-            do {
-                try await containerManager.stopContainer()
-            } catch {
-                showError(error)
-            }
-        }
-    }
-    
-    private func showError(_ error: Error) {
-        let alert = NSAlert()
-        alert.messageText = "Error"
-        alert.informativeText = error.localizedDescription
-        alert.alertStyle = .critical
-        alert.runModal()
     }
 }
 

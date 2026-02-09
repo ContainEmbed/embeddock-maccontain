@@ -16,91 +16,123 @@
 
 import Foundation
 
-// MARK: - Container State
+// MARK: - Container Status
 
-/// Represents the lifecycle state of a container.
+/// Unified status enum representing the complete container lifecycle state,
+/// including health and port forwarding sub-states.
 ///
-/// Uses a State Machine pattern to clearly define valid state transitions
-/// and make the container lifecycle explicit and type-safe.
-enum ContainerState: Equatable, CustomStringConvertible {
+/// Replaces the previous `ContainerState` + `ForwardingStatus` combination
+/// with a single source of truth for all container state.
+enum ContainerStatus: Equatable, CustomStringConvertible {
     /// No container is running.
     case idle
-    
-    /// Container is initializing (prerequisites, image extraction).
+
+    /// Container is being prepared (prerequisites, image extraction, VM boot).
     case initializing(step: StartupStep)
-    
-    /// Container is starting (VM boot, container start).
-    case starting(step: StartupStep)
-    
-    /// Container is running and healthy.
-    case running
-    
-    /// Container is running but HTTP health check failed.
-    case runningUnhealthy(reason: String)
-    
-    /// Container is stopping.
+
+    /// Container is running with health and port-forwarding sub-states.
+    case running(health: HealthState, forwarding: ForwardingState)
+
+    /// Container is shutting down.
     case stopping
-    
+
     /// Container failed to start or crashed.
     case failed(error: String)
-    
-    var description: String {
-        switch self {
-        case .idle:
-            return "Idle"
-        case .initializing(let step):
-            return "Initializing: \(step)"
-        case .starting(let step):
-            return "Starting: \(step)"
-        case .running:
-            return "Running"
-        case .runningUnhealthy(let reason):
-            return "Running (Unhealthy): \(reason)"
-        case .stopping:
-            return "Stopping"
-        case .failed(let error):
-            return "Failed: \(error)"
+
+    // MARK: Nested State Enums
+
+    /// Health state of a running container.
+    enum HealthState: Equatable, CustomStringConvertible {
+        case healthy
+        case unhealthy(reason: String)
+
+        var description: String {
+            switch self {
+            case .healthy: return "Healthy"
+            case .unhealthy(let reason): return "Unhealthy: \(reason)"
+            }
         }
     }
-    
-    /// Whether the container is currently running (healthy or unhealthy).
-    var isRunning: Bool {
-        switch self {
-        case .running, .runningUnhealthy:
-            return true
-        default:
+
+    /// Port forwarding state of a running container.
+    enum ForwardingState: Equatable, CustomStringConvertible {
+        case inactive
+        case starting
+        case active(connections: Int)
+        case error(String)
+
+        var isActive: Bool {
+            if case .active = self { return true }
             return false
         }
+
+        var description: String {
+            switch self {
+            case .inactive: return "Inactive"
+            case .starting: return "Starting..."
+            case .active(let count): return "Active (\(count) connection\(count == 1 ? "" : "s"))"
+            case .error(let msg): return "Error: \(msg)"
+            }
+        }
     }
-    
+
+    // MARK: Description
+
+    var description: String {
+        switch self {
+        case .idle: return "Idle"
+        case .initializing(let step): return "Initializing: \(step)"
+        case .running(let health, let forwarding): return "Running (\(health), forwarding: \(forwarding))"
+        case .stopping: return "Stopping"
+        case .failed(let error): return "Failed: \(error)"
+        }
+    }
+
+    // MARK: Computed Properties
+
+    /// Whether the container is in a running state (healthy or unhealthy).
+    var isRunning: Bool {
+        if case .running = self { return true }
+        return false
+    }
+
     /// Whether the container is in a transitional state.
     var isTransitioning: Bool {
         switch self {
-        case .initializing, .starting, .stopping:
-            return true
-        default:
-            return false
+        case .initializing, .stopping: return true
+        default: return false
         }
     }
-    
-    /// Whether the container can be started.
+
+    /// Whether a new container can be started.
     var canStart: Bool {
         switch self {
-        case .idle, .failed:
-            return true
-        default:
-            return false
+        case .idle, .failed: return true
+        default: return false
         }
     }
-    
+
     /// Whether the container can be stopped.
     var canStop: Bool {
         switch self {
-        case .running, .runningUnhealthy, .starting, .initializing:
-            return true
-        default:
-            return false
+        case .running, .initializing: return true
+        default: return false
         }
+    }
+
+    /// Whether the container is in an active state (can't start another).
+    var isActive: Bool { !canStart }
+
+    /// The forwarding state, if running.
+    var forwardingState: ForwardingState? {
+        if case .running(_, let forwarding) = self { return forwarding }
+        return nil
+    }
+
+    /// The health state, if running.
+    var healthState: HealthState? {
+        if case .running(let health, _) = self { return health }
+        return nil
     }
 }
 
@@ -147,63 +179,4 @@ enum StartupStep: Int, CustomStringConvertible, CaseIterable {
     }
 }
 
-// MARK: - State Machine
 
-/// Manages container state transitions with validation.
-@MainActor
-final class ContainerStateMachine: ObservableObject {
-    @Published private(set) var state: ContainerState = .idle
-    @Published private(set) var currentStep: StartupStep?
-    
-    /// Transition to a new state, validating the transition is valid.
-    func transition(to newState: ContainerState) {
-        // Log state transition
-        #if DEBUG
-        print("🔄 [StateMachine] \(state) → \(newState)")
-        #endif
-        
-        state = newState
-        
-        // Update current step if applicable
-        switch newState {
-        case .initializing(let step), .starting(let step):
-            currentStep = step
-        default:
-            currentStep = nil
-        }
-    }
-    
-    /// Transition to a startup step.
-    func transitionToStep(_ step: StartupStep) {
-        if step.rawValue <= 4 {
-            transition(to: .initializing(step: step))
-        } else {
-            transition(to: .starting(step: step))
-        }
-    }
-    
-    /// Mark as running (healthy).
-    func markRunning() {
-        transition(to: .running)
-    }
-    
-    /// Mark as running but unhealthy.
-    func markUnhealthy(reason: String) {
-        transition(to: .runningUnhealthy(reason: reason))
-    }
-    
-    /// Mark as stopping.
-    func markStopping() {
-        transition(to: .stopping)
-    }
-    
-    /// Mark as failed.
-    func markFailed(error: String) {
-        transition(to: .failed(error: error))
-    }
-    
-    /// Reset to idle.
-    func reset() {
-        transition(to: .idle)
-    }
-}
