@@ -16,8 +16,7 @@
 
 import SwiftUI
 import AppKit
-
-// MARK: - Status Section
+import EmbedDock
 
 /// Displays the current container status, port forwarding status, and container URL.
 struct StatusSection: View {

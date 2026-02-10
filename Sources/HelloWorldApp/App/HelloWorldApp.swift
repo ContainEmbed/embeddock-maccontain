@@ -18,6 +18,7 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 import Logging
+import EmbedDock
 
 // Import logging bootstrap from Logging module
 // Note: LoggingBootstrap.setup() is called in the App init
@@ -28,7 +29,7 @@ struct HelloWorldApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     
     @StateObject private var viewModel: ContainerViewModel = {
-        // Ensure logging is bootstrapped before ContainerManager is created
+        // Ensure logging is bootstrapped before ContainerEngine is created
         LoggingBootstrap.initialize()
         return ContainerViewModel()
     }()
