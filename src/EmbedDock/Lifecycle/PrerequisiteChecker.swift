@@ -119,23 +119,16 @@ public struct PrerequisiteChecker: Sendable {
         }
         
         // Try in source tree Resources directory for development
-        if let executablePath = Bundle.main.executablePath {
-            let execURL = URL(fileURLWithPath: executablePath)
-            logger.debug("🔍 [PrerequisiteChecker] Executable path: \(executablePath)")
-            // When running from .build/arm64-apple-macosx/debug, need to go up 4 levels
-            let projectRoot = execURL.deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-            logger.debug("🔍 [PrerequisiteChecker] Project root: \(projectRoot.path)")
-            let sourceResourcesURL = projectRoot
-                .appendingPathComponent("Sources/HelloWorldApp/Resources/\(name)")
-            logger.debug("🔍 [PrerequisiteChecker] Checking source tree: \(sourceResourcesURL.path)")
-            logger.debug("🔍 [PrerequisiteChecker] File exists: \(FileManager.default.fileExists(atPath: sourceResourcesURL.path))")
-            if FileManager.default.fileExists(atPath: sourceResourcesURL.path) {
-                logger.info("✅ [PrerequisiteChecker] Found in source tree: \(sourceResourcesURL.path)")
-                return sourceResourcesURL
-            }
+        // Use #filePath to resolve relative to this source file's location (EmbedDock/Lifecycle/)
+        let thisFileURL = URL(fileURLWithPath: #filePath)
+        let embedDockDir = thisFileURL.deletingLastPathComponent().deletingLastPathComponent() // up from Lifecycle/ to EmbedDock/
+        let sourceResourcesURL = embedDockDir.appendingPathComponent("Resources/\(name)")
+        logger.debug("🔍 [PrerequisiteChecker] EmbedDock dir: \(embedDockDir.path)")
+        logger.debug("🔍 [PrerequisiteChecker] Checking source tree: \(sourceResourcesURL.path)")
+        logger.debug("🔍 [PrerequisiteChecker] File exists: \(FileManager.default.fileExists(atPath: sourceResourcesURL.path))")
+        if FileManager.default.fileExists(atPath: sourceResourcesURL.path) {
+            logger.info("✅ [PrerequisiteChecker] Found in source tree: \(sourceResourcesURL.path)")
+            return sourceResourcesURL
         }
         
         logger.error("❌ [PrerequisiteChecker] Could not find resource: \(name)")

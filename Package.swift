@@ -67,7 +67,7 @@ let package = Package(
                 "ContainerizationOS",
                 "ContainerizationIO",
             ],
-            path: "Sources/HelloWorldApp",
+            path: "src/HelloWorldApp",
             swiftSettings: [
                 .unsafeFlags(["-parse-as-library"])
             ]
@@ -85,7 +85,7 @@ let package = Package(
                 "ContainerizationOS",
                 "ContainerizationIO",
             ],
-            path: "Sources/EmbedDock",
+            path: "src/EmbedDock",
             resources: [
                 .copy("Resources")
             ]
@@ -126,7 +126,7 @@ let package = Package(
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 "Containerization",
             ],
-            path: "Sources/Integration"
+            path: "src/Integration"
         ),
         .target(
             name: "ContainerizationEXT4",
@@ -135,7 +135,7 @@ let package = Package(
                 .product(name: "SystemPackage", package: "swift-system"),
                 "ContainerizationOS",
             ],
-            path: "Sources/ContainerizationEXT4"
+            path: "src/ContainerizationEXT4"
         ),
         .target(
             name: "ContainerizationArchive",
@@ -151,7 +151,7 @@ let package = Package(
         .target(
             name: "CArchive",
             dependencies: [],
-            path: "Sources/ContainerizationArchive/CArchive",
+            path: "src/ContainerizationArchive/CArchive",
             cSettings: [
                 .define(
                     "PLATFORM_CONFIG_H", to: "\"config_darwin.h\"",

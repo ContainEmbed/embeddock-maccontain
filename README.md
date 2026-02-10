@@ -472,7 +472,7 @@ embeddock-maccontain/
 │   ├── cctl                               # Pre-built CLI
 │   └── containerization-integration       # Integration helper
 │
-└── Sources/
+└── src/
     ├── HelloWorldApp/                     # ── Main Application ──
     │   ├── ContainerManager.swift         # Pure model — business logic, delegate callbacks
     │   ├── AppDelegate.swift              # macOS app delegate, CLI auto-start
