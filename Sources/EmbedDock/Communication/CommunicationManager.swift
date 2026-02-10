@@ -178,9 +178,9 @@ public actor CommunicationManager {
         throw CommunicationError.noAvailableChannel
     }
     
-    // MARK: - ContainerManager Compatibility
+    // MARK: - ContainerEngine Compatibility
     
-    /// Setup HTTP communication channel (compatibility method for ContainerManager).
+    /// Setup HTTP communication channel (compatibility method for ContainerEngine).
     /// - Parameter port: The container port to connect to.
     /// - Returns: The configured HTTPContainerCommunicator.
     public func setupHTTPCommunication(port: Int) async throws -> HTTPContainerCommunicator {
@@ -200,7 +200,7 @@ public actor CommunicationManager {
         }
     }
     
-    /// Make an HTTP request (convenience method for ContainerManager).
+    /// Make an HTTP request (convenience method for ContainerEngine).
     /// - Parameters:
     ///   - method: HTTP method (GET, POST, etc.)
     ///   - path: Request path.

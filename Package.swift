@@ -27,6 +27,10 @@ let package = Package(
             name: "HelloWorldApp",
             targets: ["HelloWorldApp"]
         ),
+        .library(
+            name: "EmbedDock",
+            targets: ["EmbedDock"]
+        ),
         .library(name: "Containerization", targets: ["Containerization", "ContainerizationError"]),
         .library(name: "ContainerizationEXT4", targets: ["ContainerizationEXT4"]),
         .library(name: "ContainerizationOCI", targets: ["ContainerizationOCI"]),
@@ -54,6 +58,7 @@ let package = Package(
             name: "HelloWorldApp",
             dependencies: [
                 .product(name: "Logging", package: "swift-log"),
+                "EmbedDock",
                 "Containerization",
                 "ContainerizationOCI",
                 "ContainerizationArchive",
@@ -63,11 +68,26 @@ let package = Package(
                 "ContainerizationIO",
             ],
             path: "Sources/HelloWorldApp",
-            resources: [
-                .copy("Resources")
-            ],
             swiftSettings: [
                 .unsafeFlags(["-parse-as-library"])
+            ]
+        ),
+        .target(
+            name: "EmbedDock",
+            dependencies: [
+                .product(name: "Logging", package: "swift-log"),
+                .product(name: "NIO", package: "swift-nio"),
+                "Containerization",
+                "ContainerizationOCI",
+                "ContainerizationArchive",
+                "ContainerizationEXT4",
+                "ContainerizationExtras",
+                "ContainerizationOS",
+                "ContainerizationIO",
+            ],
+            path: "Sources/EmbedDock",
+            resources: [
+                .copy("Resources")
             ]
         ),
         .target(

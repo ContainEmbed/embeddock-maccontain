@@ -63,17 +63,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// Start a Node.js container with the given JavaScript file.
     /// - Parameters:
     ///   - url: The JavaScript file URL to run.
-    ///   - containerManager: The container manager to use.
-    func openJavaScriptFile(_ url: URL, containerManager: ContainerManager) {
+    ///   - viewModel: The container view model to use.
+    func openJavaScriptFile(_ url: URL, viewModel: ContainerViewModel) {
         Task { @MainActor in
             do {
                 print("🟢 [AppDelegate] Starting Node.js container with: \(url.lastPathComponent)")
                 
-                try await containerManager.startNodeServer(
-                    jsFile: url,
-                    imageName: "node:20-alpine",
-                    port: 3000
-                )
+                try await viewModel.startNodeServer(jsFile: url)
                 
                 // Open browser after a short delay to let server start
                 try await Task.sleep(for: .seconds(2))
@@ -102,7 +98,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     
     func applicationWillTerminate(_ notification: Notification) {
         print("👋 [AppDelegate] Application will terminate")
-        // Container cleanup is handled by ContainerOrchestrator's deinit/cleanup
+        // Container cleanup is handled by DefaultContainerEngine's deinit/cleanup
     }
     
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

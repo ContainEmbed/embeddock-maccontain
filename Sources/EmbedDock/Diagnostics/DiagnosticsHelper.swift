@@ -62,44 +62,143 @@ final class DiagnosticsHelper: @unchecked Sendable {
     
     /// Test container HTTP response with retry and exponential backoff.
     ///
-    /// Optimized for speed: 3 retries with shorter delays.
-    func testHTTPResponseWithRetry(pod: LinuxPod, port: Int, maxRetries: Int = 3) async -> Bool {
-        logger.info("🧪 [DiagnosticsHelper] Testing HTTP response with \(maxRetries) retries...")
-        
-        let delays: [UInt64] = [300_000_000, 700_000_000, 1_500_000_000] // 300ms, 700ms, 1.5s
-        
+    /// Test container HTTP response with retry, exponential backoff, and tool fallback.
+    ///
+    /// Strategy:
+    /// 1. Wait for the port to become listening (up to ~10s) so we don't waste HTTP
+    ///    attempts while the server is still booting.
+    /// 2. Probe with `curl`; if curl is not available fall back to `wget`.
+    /// 3. Six retries with increasing delays (total wait ≈ 15s).
+    func testHTTPResponseWithRetry(pod: LinuxPod, port: Int, maxRetries: Int = 6) async -> Bool {
+        logger.info("🧪 [DiagnosticsHelper] Testing HTTP response on port \(port) with \(maxRetries) retries...")
+
+        // Phase 0: Wait for the port to be listening before wasting HTTP probes.
+        let portReady = await waitForPortListening(pod: pod, containerID: "main", port: port, timeout: 10)
+        if !portReady {
+            logger.warning("⚠️ [DiagnosticsHelper] Port \(port) never started listening — server may not have launched")
+            // Fall through and still attempt HTTP probes in case ss/netstat gave a false negative.
+        }
+
+        // Phase 1: Detect available HTTP tool (curl preferred, wget fallback).
+        let httpTool = await detectHTTPTool(pod: pod)
+        logger.info("🔧 [DiagnosticsHelper] Using HTTP tool: \(httpTool.rawValue)")
+
+        // Phase 2: Retry loop with increasing delays.
+        //                              0.5s  1s    2s    3s    4s    5s     → total ≈ 15.5s
+        let delays: [UInt64] = [500_000_000, 1_000_000_000, 2_000_000_000, 3_000_000_000, 4_000_000_000, 5_000_000_000]
+
         for attempt in 1...maxRetries {
-            let delayIndex = min(attempt - 1, delays.count - 1)
-            
             if attempt > 1 {
-                let delayNs = delays[delayIndex]
+                let delayNs = delays[min(attempt - 1, delays.count - 1)]
                 let delayMs = delayNs / UInt64(1_000_000)
                 logger.debug("🔄 [DiagnosticsHelper] Retry \(attempt)/\(maxRetries), waiting \(delayMs)ms...")
                 try? await Task.sleep(nanoseconds: delayNs)
             }
-            
-            do {
-                let curlProcess = try await pod.execInContainer(
-                    "main",
-                    processID: "health-check-\(attempt)-\(UUID().uuidString.prefix(8))",
-                    configuration: { config in
-                        config.arguments = ["curl", "-s", "-m", "2", "-o", "/dev/null", "-w", "%{http_code}", "http://localhost:\(port)/"]
-                        config.workingDirectory = "/"
-                    }
-                )
-                try await curlProcess.start()
-                let exitStatus = try await curlProcess.wait(timeoutInSeconds: 5)
-                
-                if exitStatus.exitCode == 0 {
-                    logger.info("✅ [DiagnosticsHelper] HTTP responding on attempt \(attempt)")
-                    return true
-                }
-            } catch {
-                logger.debug("⚠️ [DiagnosticsHelper] Attempt \(attempt) failed: \(error.localizedDescription)")
+
+            let success = await probeHTTP(pod: pod, port: port, tool: httpTool, attempt: attempt)
+            if success {
+                logger.info("✅ [DiagnosticsHelper] HTTP responding on attempt \(attempt)")
+                return true
             }
         }
-        
+
         logger.warning("⚠️ [DiagnosticsHelper] HTTP not responding after \(maxRetries) attempts")
+        return false
+    }
+
+    // MARK: - HTTP Tool Detection
+
+    /// HTTP tools we can use for health probes.
+    enum HTTPTool: String {
+        case curl
+        case wget
+        case shell // last-resort /dev/tcp probe via bash
+    }
+
+    /// Detect which HTTP tool is available inside the container.
+    private func detectHTTPTool(pod: LinuxPod) async -> HTTPTool {
+        // Try curl
+        if await execCheck(pod: pod, args: ["which", "curl"]) { return .curl }
+        // Try wget
+        if await execCheck(pod: pod, args: ["which", "wget"]) { return .wget }
+        // Fall back to bash /dev/tcp
+        return .shell
+    }
+
+    /// Run a quick command inside the container and return true if exit code == 0.
+    private func execCheck(pod: LinuxPod, args: [String]) async -> Bool {
+        do {
+            let proc = try await pod.execInContainer(
+                "main",
+                processID: "tool-check-\(UUID().uuidString.prefix(8))",
+                configuration: { config in
+                    config.arguments = args
+                    config.workingDirectory = "/"
+                }
+            )
+            try await proc.start()
+            let status = try await proc.wait(timeoutInSeconds: 5)
+            return status.exitCode == 0
+        } catch {
+            return false
+        }
+    }
+
+    /// Perform a single HTTP probe using the chosen tool.
+    private func probeHTTP(pod: LinuxPod, port: Int, tool: HTTPTool, attempt: Int) async -> Bool {
+        let probeArgs: [String]
+        switch tool {
+        case .curl:
+            probeArgs = ["curl", "-s", "-m", "3", "-o", "/dev/null", "-w", "%{http_code}", "http://localhost:\(port)/"]
+        case .wget:
+            probeArgs = ["wget", "-q", "-O", "/dev/null", "--timeout=3", "--spider", "http://localhost:\(port)/"]
+        case .shell:
+            // Bash /dev/tcp probe — only checks connectivity, not HTTP.
+            probeArgs = ["bash", "-c", "echo -e \"GET / HTTP/1.0\\r\\n\\r\\n\" > /dev/tcp/localhost/\(port)"]
+        }
+
+        do {
+            let proc = try await pod.execInContainer(
+                "main",
+                processID: "health-check-\(attempt)-\(UUID().uuidString.prefix(8))",
+                configuration: { config in
+                    config.arguments = probeArgs
+                    config.workingDirectory = "/"
+                }
+            )
+            try await proc.start()
+            let exitStatus = try await proc.wait(timeoutInSeconds: 5)
+            return exitStatus.exitCode == 0
+        } catch {
+            logger.debug("⚠️ [DiagnosticsHelper] Probe attempt \(attempt) failed: \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    // MARK: - Port Listening Wait
+
+    /// Poll until the given port is listening inside the container, or timeout.
+    ///
+    /// - Parameters:
+    ///   - pod: The Linux pod.
+    ///   - containerID: The container to check.
+    ///   - port: The TCP port.
+    ///   - timeout: Maximum seconds to wait.
+    /// - Returns: `true` if the port became available before the timeout.
+    func waitForPortListening(pod: LinuxPod, containerID: String, port: Int, timeout: Int = 10) async -> Bool {
+        let pollInterval: UInt64 = 1_000_000_000 // 1 second
+        let maxPolls = timeout
+
+        for poll in 1...maxPolls {
+            if await isPortListening(pod: pod, containerID: containerID, port: port) {
+                logger.info("✅ [DiagnosticsHelper] Port \(port) is listening (poll \(poll)/\(maxPolls))")
+                return true
+            }
+            logger.debug("⏳ [DiagnosticsHelper] Waiting for port \(port)... (poll \(poll)/\(maxPolls))")
+            try? await Task.sleep(nanoseconds: pollInterval)
+        }
+
+        logger.warning("⚠️ [DiagnosticsHelper] Port \(port) not listening after \(timeout)s")
         return false
     }
     

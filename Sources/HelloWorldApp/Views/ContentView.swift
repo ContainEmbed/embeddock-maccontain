@@ -22,8 +22,7 @@ import UniformTypeIdentifiers
 
 /// Main content view for the HelloWorldApp container runtime.
 struct ContentView: View {
-    @EnvironmentObject var containerManager: ContainerManager
-    @StateObject private var viewModel = ContentViewModel()
+    @EnvironmentObject var viewModel: ContainerViewModel
     
     var body: some View {
         ZStack {
@@ -36,51 +35,24 @@ struct ContentView: View {
                     headerSection
                     
                     // Status Section
-                    StatusSection(containerManager: containerManager)
+                    StatusSection(viewModel: viewModel)
                     
                     // Tab View for different features
-                    if containerManager.isRunning {
+                    if viewModel.isRunning {
                         tabPicker
                         
                         switch viewModel.selectedTab {
                         case 0:
-                            ControlSection(
-                                containerManager: containerManager,
-                                port: $viewModel.port,
-                                apiResponse: $viewModel.apiResponse,
-                                isCheckingAPI: $viewModel.isCheckingAPI,
-                                showSettings: $viewModel.showSettings
-                            )
+                            ControlSection(viewModel: viewModel)
                         case 1:
-                            TerminalSection(
-                                containerManager: containerManager,
-                                commandInput: $viewModel.commandInput,
-                                commandOutput: $viewModel.commandOutput,
-                                isExecutingCommand: $viewModel.isExecutingCommand
-                            )
+                            TerminalSection(viewModel: viewModel)
                         case 2:
-                            FilesSection(
-                                containerManager: containerManager,
-                                commandOutput: $viewModel.commandOutput,
-                                isExecutingCommand: $viewModel.isExecutingCommand
-                            )
+                            FilesSection(viewModel: viewModel)
                         default:
-                            ControlSection(
-                                containerManager: containerManager,
-                                port: $viewModel.port,
-                                apiResponse: $viewModel.apiResponse,
-                                isCheckingAPI: $viewModel.isCheckingAPI,
-                                showSettings: $viewModel.showSettings
-                            )
+                            ControlSection(viewModel: viewModel)
                         }
                     } else {
-                        ControlSection(
-                            containerManager: containerManager,
-                            port: $viewModel.port,
-                            apiResponse: $viewModel.apiResponse,
-                            isCheckingAPI: $viewModel.isCheckingAPI,
-                            showSettings: $viewModel.showSettings
-                        )
+                        ControlSection(viewModel: viewModel)
                     }
                     
                     Spacer(minLength: 20)
@@ -95,7 +67,7 @@ struct ContentView: View {
             SettingsView(imageName: $viewModel.imageName, port: $viewModel.port)
         }
         .task {
-            await viewModel.initializeContainerManager(containerManager)
+            await viewModel.initialize()
         }
     }
     
@@ -150,7 +122,7 @@ struct ContentView: View {
 struct ContentView_Previews: PreviewProvider {
     static var previews: some View {
         ContentView()
-            .environmentObject(ContainerManager())
+            .environmentObject(ContainerViewModel())
     }
 }
 #endif
