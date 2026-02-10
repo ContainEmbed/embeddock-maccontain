@@ -15,8 +15,7 @@
 //===----------------------------------------------------------------------===//
 
 import SwiftUI
-
-// MARK: - Files Section
+import EmbedDock
 
 /// Provides file system browsing and process viewing for the container.
 struct FilesSection: View {

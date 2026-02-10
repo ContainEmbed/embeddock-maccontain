@@ -63,7 +63,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// Start a Node.js container with the given JavaScript file.
     /// - Parameters:
     ///   - url: The JavaScript file URL to run.
-    ///   - containerManager: The container manager to use.
+    ///   - viewModel: The container view model to use.
     func openJavaScriptFile(_ url: URL, viewModel: ContainerViewModel) {
         Task { @MainActor in
             do {
@@ -98,7 +98,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     
     func applicationWillTerminate(_ notification: Notification) {
         print("👋 [AppDelegate] Application will terminate")
-        // Container cleanup is handled by ContainerOrchestrator's deinit/cleanup
+        // Container cleanup is handled by DefaultContainerEngine's deinit/cleanup
     }
     
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

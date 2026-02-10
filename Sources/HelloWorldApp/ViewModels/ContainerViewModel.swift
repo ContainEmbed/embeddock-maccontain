@@ -19,18 +19,19 @@ import AppKit
 import UniformTypeIdentifiers
 import ContainerizationOCI
 import Containerization
+import EmbedDock
 
 // MARK: - Container View Model
 
 /// The primary ViewModel for all container-related UI.
 ///
-/// Owns a `ContainerManager` instance privately and exposes all
+/// Owns a `ContainerEngine` instance (via protocol) and exposes all
 /// container state as `@Published` properties for SwiftUI views.
-/// Implements `ContainerManagerDelegate` to receive state updates
-/// from the manager and translate them into UI-appropriate values.
+/// Implements `ContainerEngineDelegate` to receive state updates
+/// from the engine and translate them into UI-appropriate values.
 ///
 /// Views should interact exclusively with this ViewModel — never
-/// with `ContainerManager` directly.
+/// with the concrete engine implementation directly.
 @MainActor
 final class ContainerViewModel: ObservableObject {
 
@@ -98,22 +99,22 @@ final class ContainerViewModel: ObservableObject {
 
     // MARK: - Private
 
-    let containerManager: ContainerManager
+    let engine: any ContainerEngine
 
     // MARK: - Initialization
 
-    init() {
-        self.containerManager = ContainerManager()
-        self.containerManager.delegate = self
+    init(engine: (any ContainerEngine)? = nil) {
+        self.engine = engine ?? ContainerEngineFactory.makeEngine()
+        self.engine.delegate = self
     }
 
     // MARK: - Lifecycle
 
     func initialize() async {
         do {
-            print("🔧 [ContainerViewModel] Initializing container manager...")
-            try await containerManager.initialize()
-            print("✅ [ContainerViewModel] Container manager initialized successfully")
+            print("🔧 [ContainerViewModel] Initializing container engine...")
+            try await engine.initialize()
+            print("✅ [ContainerViewModel] Container engine initialized successfully")
         } catch {
             print("❌ [ContainerViewModel] Failed to initialize: \(error)")
         }
@@ -123,20 +124,20 @@ final class ContainerViewModel: ObservableObject {
 
     func startContainerFromImage(imageFile: URL) async throws {
         let targetPort = Int(port) ?? 3000
-        try await containerManager.startContainerFromImage(imageFile: imageFile, port: targetPort)
+        try await engine.startFromImage(imageFile: imageFile, port: targetPort)
     }
 
     func startNodeServer(jsFile: URL) async throws {
         let targetPort = Int(port) ?? 3000
-        try await containerManager.startNodeServer(jsFile: jsFile, imageName: imageName, port: targetPort)
+        try await engine.startNodeServer(jsFile: jsFile, imageName: imageName, port: targetPort)
     }
 
     func stopContainer() async throws {
-        try await containerManager.stopContainer()
+        try await engine.stop()
     }
 
     func executeCommand(_ command: [String], workingDirectory: String? = nil) async throws -> ExecResult {
-        try await containerManager.executeCommand(command, workingDirectory: workingDirectory)
+        try await engine.execute(command, workingDirectory: workingDirectory)
     }
 
     func checkContainerAPI() async {
@@ -145,7 +146,7 @@ final class ContainerViewModel: ObservableObject {
 
         do {
             let targetPort = Int(port) ?? 3000
-            let result = try await containerManager.checkContainerAPI(port: targetPort)
+            let result = try await engine.checkAPI(port: targetPort)
             apiResponse = """
             ✅ Status: \(result.statusCode)
             📦 Response Body:
@@ -169,45 +170,45 @@ final class ContainerViewModel: ObservableObject {
         body: Data? = nil,
         headers: [String: String] = [:]
     ) async throws -> HTTPResponse {
-        try await containerManager.httpRequest(method: method, path: path, body: body, headers: headers)
+        try await engine.httpRequest(method: method, path: path, body: body, headers: headers)
     }
 
     func readContainerFile(_ path: String) async throws -> String {
-        try await containerManager.readContainerFile(path)
+        try await engine.readFile(path)
     }
 
     func writeContainerFile(_ path: String, content: String) async throws {
-        try await containerManager.writeContainerFile(path, content: content)
+        try await engine.writeFile(path, content: content)
     }
 
     func listContainerDirectory(_ path: String) async throws -> [String] {
-        try await containerManager.listContainerDirectory(path)
+        try await engine.listDirectory(path)
     }
 
     func getContainerEnvironment() async throws -> [String: String] {
-        try await containerManager.getContainerEnvironment()
+        try await engine.environment()
     }
 
     func getContainerProcesses() async throws -> String {
-        try await containerManager.getContainerProcesses()
+        try await engine.processes()
     }
 
     func isPortListening(_ port: Int) async throws -> Bool {
-        try await containerManager.isPortListening(port)
+        try await engine.isPortListening(port)
     }
 
     // MARK: - Port Forwarding
 
     func startPortForwarding() async throws {
         let targetPort = UInt16(Int(port) ?? 3000)
-        try await containerManager.startPortForwarding(
+        try await engine.startPortForwarding(
             hostPort: targetPort,
             containerPort: targetPort
         )
     }
 
     func stopPortForwarding() async {
-        await containerManager.stopPortForwarding()
+        await engine.stopPortForwarding()
     }
 
     func retryPortForwarding() async {
@@ -221,25 +222,25 @@ final class ContainerViewModel: ObservableObject {
     // MARK: - Diagnostics
 
     func getSystemInfo() -> [String: String] {
-        containerManager.getSystemInfo()
+        engine.systemInfo()
     }
 
     func readLogFile(name: String, lastLines: Int = 100) -> String? {
-        containerManager.readLogFile(name: name, lastLines: lastLines)
+        engine.readLogFile(name: name, lastLines: lastLines)
     }
 
     func reprintLastDiagnosticReport() {
-        containerManager.reprintLastDiagnosticReport()
+        engine.reprintLastDiagnosticReport()
     }
 
     // MARK: - Image Operations
 
     func pullNodeImage(reference: String, platform: Platform? = nil) async throws -> ContainerImage {
-        try await containerManager.pullNodeImage(reference: reference, platform: platform)
+        try await engine.pullImage(reference: reference, platform: platform)
     }
 
     func prepareRootfs(from image: ContainerImage, platform: Platform) async throws -> URL {
-        try await containerManager.prepareRootfs(from: image, platform: platform)
+        try await engine.prepareRootfs(from: image, platform: platform)
     }
 
     // MARK: - File Picker
@@ -368,30 +369,30 @@ final class ContainerViewModel: ObservableObject {
     }
 }
 
-// MARK: - ContainerManagerDelegate
+// MARK: - ContainerEngineDelegate
 
-extension ContainerViewModel: ContainerManagerDelegate {
-    func containerManagerDidUpdate(_ manager: ContainerManager) {
-        status = manager.status
-        containerURL = manager.containerURL
-        isCommunicationReady = manager.isCommunicationReady
+extension ContainerViewModel: ContainerEngineDelegate {
+    func engineDidUpdateState(_ engine: any ContainerEngine) {
+        status = engine.status
+        containerURL = engine.containerURL
+        isCommunicationReady = engine.isCommunicationReady
 
         // Derive status message from status
-        updateStatusMessage(for: manager.status)
+        updateStatusMessage(for: engine.status)
 
         // Refresh communication channels
         if isCommunicationReady {
-            Task { activeChannels = await manager.getActiveChannels() }
+            Task { activeChannels = await engine.activeChannels() }
         } else {
             activeChannels = []
         }
     }
 
-    func containerManager(_ manager: ContainerManager, didUpdateProgress message: String) {
+    func engine(_ engine: any ContainerEngine, didUpdateProgress message: String) {
         statusMessage = message
     }
 
-    func containerManager(_ manager: ContainerManager, didProduceDiagnosticReport report: DiagnosticReport) {
+    func engine(_ engine: any ContainerEngine, didProduceDiagnosticReport report: DiagnosticReport) {
         lastDiagnosticReport = report
     }
 }

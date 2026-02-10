@@ -23,7 +23,7 @@ import Foundation
 ///
 /// Replaces the previous `ContainerState` + `ForwardingStatus` combination
 /// with a single source of truth for all container state.
-enum ContainerStatus: Equatable, CustomStringConvertible {
+public enum ContainerStatus: Equatable, CustomStringConvertible {
     /// No container is running.
     case idle
 
@@ -42,11 +42,11 @@ enum ContainerStatus: Equatable, CustomStringConvertible {
     // MARK: Nested State Enums
 
     /// Health state of a running container.
-    enum HealthState: Equatable, CustomStringConvertible {
+    public enum HealthState: Equatable, CustomStringConvertible {
         case healthy
         case unhealthy(reason: String)
 
-        var description: String {
+        public var description: String {
             switch self {
             case .healthy: return "Healthy"
             case .unhealthy(let reason): return "Unhealthy: \(reason)"
@@ -55,18 +55,18 @@ enum ContainerStatus: Equatable, CustomStringConvertible {
     }
 
     /// Port forwarding state of a running container.
-    enum ForwardingState: Equatable, CustomStringConvertible {
+    public enum ForwardingState: Equatable, CustomStringConvertible {
         case inactive
         case starting
         case active(connections: Int)
         case error(String)
 
-        var isActive: Bool {
+        public var isActive: Bool {
             if case .active = self { return true }
             return false
         }
 
-        var description: String {
+        public var description: String {
             switch self {
             case .inactive: return "Inactive"
             case .starting: return "Starting..."
@@ -78,7 +78,7 @@ enum ContainerStatus: Equatable, CustomStringConvertible {
 
     // MARK: Description
 
-    var description: String {
+    public var description: String {
         switch self {
         case .idle: return "Idle"
         case .initializing(let step): return "Initializing: \(step)"
@@ -91,13 +91,13 @@ enum ContainerStatus: Equatable, CustomStringConvertible {
     // MARK: Computed Properties
 
     /// Whether the container is in a running state (healthy or unhealthy).
-    var isRunning: Bool {
+    public var isRunning: Bool {
         if case .running = self { return true }
         return false
     }
 
     /// Whether the container is in a transitional state.
-    var isTransitioning: Bool {
+    public var isTransitioning: Bool {
         switch self {
         case .initializing, .stopping: return true
         default: return false
@@ -105,7 +105,7 @@ enum ContainerStatus: Equatable, CustomStringConvertible {
     }
 
     /// Whether a new container can be started.
-    var canStart: Bool {
+    public var canStart: Bool {
         switch self {
         case .idle, .failed: return true
         default: return false
@@ -113,7 +113,7 @@ enum ContainerStatus: Equatable, CustomStringConvertible {
     }
 
     /// Whether the container can be stopped.
-    var canStop: Bool {
+    public var canStop: Bool {
         switch self {
         case .running, .initializing: return true
         default: return false
@@ -121,16 +121,16 @@ enum ContainerStatus: Equatable, CustomStringConvertible {
     }
 
     /// Whether the container is in an active state (can't start another).
-    var isActive: Bool { !canStart }
+    public var isActive: Bool { !canStart }
 
     /// The forwarding state, if running.
-    var forwardingState: ForwardingState? {
+    public var forwardingState: ForwardingState? {
         if case .running(_, let forwarding) = self { return forwarding }
         return nil
     }
 
     /// The health state, if running.
-    var healthState: HealthState? {
+    public var healthState: HealthState? {
         if case .running(let health, _) = self { return health }
         return nil
     }
@@ -139,7 +139,7 @@ enum ContainerStatus: Equatable, CustomStringConvertible {
 // MARK: - Startup Steps
 
 /// Represents the steps during container startup.
-enum StartupStep: Int, CustomStringConvertible, CaseIterable {
+public enum StartupStep: Int, CustomStringConvertible, CaseIterable {
     case checkingPrerequisites = 0
     case extractingImage = 1
     case importingImage = 2
@@ -152,7 +152,7 @@ enum StartupStep: Int, CustomStringConvertible, CaseIterable {
     case addingContainer = 9
     case startingContainer = 10
     
-    var description: String {
+    public var description: String {
         switch self {
         case .checkingPrerequisites: return "Checking prerequisites"
         case .extractingImage: return "Extracting OCI image"
@@ -169,12 +169,12 @@ enum StartupStep: Int, CustomStringConvertible, CaseIterable {
     }
     
     /// Progress percentage (0.0 to 1.0).
-    var progress: Double {
+    public var progress: Double {
         Double(rawValue) / Double(StartupStep.allCases.count - 1)
     }
     
     /// Status message with step number.
-    var statusMessage: String {
+    public var statusMessage: String {
         "Step \(rawValue)/\(StartupStep.allCases.count - 1): \(description)..."
     }
 }
