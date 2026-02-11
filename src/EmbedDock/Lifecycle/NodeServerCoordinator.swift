@@ -100,6 +100,25 @@ final class NodeServerCoordinator {
 
         // Step 9: Add container to pod
         updateProgress("Step 9/10: Adding container to pod...")
+
+        // Verify host directory access before creating VirtioFS mount.
+        // ~/Desktop is TCC-protected on macOS; this triggers the permission
+        // prompt and fails fast if access is denied, instead of hanging
+        // during the guest VirtioFS mount.
+        let hostSharePath = "/Users/babithbabyvarghese/Desktop"
+        let hostShareURL = URL(fileURLWithPath: hostSharePath)
+        do {
+            _ = try FileManager.default.contentsOfDirectory(at: hostShareURL, includingPropertiesForKeys: nil)
+            logger.info("✅ [NodeServerCoordinator] Host directory access verified: \(hostSharePath)")
+        } catch {
+            logger.error("❌ [NodeServerCoordinator] Cannot access host directory: \(hostSharePath) — \(error.localizedDescription)")
+            logger.error("   Grant Desktop access in System Settings > Privacy & Security > Files and Folders")
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "Cannot access \(hostSharePath). Grant Desktop access in System Settings > Privacy & Security > Files and Folders."
+            )
+        }
+
         let containerConfig = ContainerConfiguration(
             containerID: "nodejs",
             hostname: "nodejs-container",
@@ -115,6 +134,11 @@ final class NodeServerCoordinator {
                 Containerization.Mount.share(
                     source: appDir.path,
                     destination: "/app",
+                    options: ["ro"]
+                ),
+                Containerization.Mount.share(
+                    source: hostSharePath,
+                    destination: "/host-files",
                     options: ["ro"]
                 )
             ]
