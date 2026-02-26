@@ -295,7 +295,7 @@ final class DefaultContainerEngine: ContainerEngine {
 
     // MARK: - ContainerNetworking
 
-    func startPortForwarding(hostPort: UInt16, containerPort: UInt16, bridgePort: UInt16 = 5000) async throws {
+    func startPortForwarding(hostPort: UInt16, containerPort: UInt16) async throws {
         guard let pod = currentPod else {
             throw ContainerizationError(.invalidState, message: "No container is running")
         }
@@ -305,7 +305,6 @@ final class DefaultContainerEngine: ContainerEngine {
         let forwarder = TcpPortForwarder(
             hostPort: hostPort,
             containerPort: containerPort,
-            bridgePort: bridgePort,
             pod: pod,
             logger: logger
         )
@@ -405,6 +404,7 @@ final class DefaultContainerEngine: ContainerEngine {
         case .inactive: return .inactive
         case .starting: return .starting
         case .active(let n): return .active(connections: n)
+        case .recovering(let attempt): return .recovering(attempt: attempt)
         case .error(let msg): return .error(msg)
         }
     }

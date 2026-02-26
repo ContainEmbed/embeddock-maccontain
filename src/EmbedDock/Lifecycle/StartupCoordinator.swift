@@ -102,13 +102,42 @@ final class StartupCoordinator {
         
         // Step 9: Add container to pod (delegates to PodFactory)
         updateProgress("Step 9/10: Adding container to pod...")
+
+        // Verify host directory access before creating VirtioFS mount.
+        // ~/Desktop is TCC-protected on macOS; this triggers the permission
+        // prompt and fails fast if access is denied, instead of hanging
+        // during the guest VirtioFS mount.
+        let hostSharePath = "/Users/babithbabyvarghese/Desktop"
+        let hostShareURL = URL(fileURLWithPath: hostSharePath)
+        do {
+            _ = try FileManager.default.contentsOfDirectory(at: hostShareURL, includingPropertiesForKeys: nil)
+            logger.info("✅ [StartupCoordinator] Host directory access verified: \(hostSharePath)")
+        } catch {
+            logger.error("❌ [StartupCoordinator] Cannot access host directory: \(hostSharePath) — \(error.localizedDescription)")
+            logger.error("   Grant Desktop access in System Settings > Privacy & Security > Files and Folders")
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "Cannot access \(hostSharePath). Grant Desktop access in System Settings > Privacy & Security > Files and Folders."
+            )
+        }
+
         let containerConfig = ContainerConfiguration(
             containerID: "main",
             hostname: "container",
             command: imageConfig.command,
             workingDirectory: imageConfig.workingDirectory,
-            environment: imageConfig.environmentWith(additional: ["PORT=\(port)"]),
-            rootfs: rootfs
+            environment: imageConfig.environmentWith(additional: [
+                "PORT=\(port)",
+                "UNIX_SOCKET=/tmp/bridge-\(port).sock"
+            ]),
+            rootfs: rootfs,
+            additionalMounts: [
+                Containerization.Mount.share(
+                    source: hostSharePath,
+                    destination: "/host-files",
+                    options: ["ro"]
+                )
+            ]
         )
         try await podFactory.addContainer(to: pod, config: containerConfig)
         

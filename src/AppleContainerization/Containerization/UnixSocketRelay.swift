@@ -57,6 +57,7 @@ extension UnixSocketRelayManager {
             try await socketRelay.start()
         } catch {
             self.relays.removeValue(forKey: socket.id)
+            throw error
         }
     }
 
@@ -168,19 +169,29 @@ extension SocketRelay {
         let connectionStream = try hostSocket.acceptStream(closeOnDeinit: false)
         self.state.withLock {
             $0.t = Task {
+                defer {
+                    try? FileManager.default.removeItem(at: hostConn)
+                }
                 do {
                     for try await connection in connectionStream {
-                        try await self.handleHostUnixConn(
-                            hostConn: connection,
-                            port: self.port,
-                            vm: self.vm,
-                            log: self.log
-                        )
+                        do {
+                            try await self.handleHostUnixConn(
+                                hostConn: connection,
+                                port: self.port,
+                                vm: self.vm,
+                                log: self.log
+                            )
+                        } catch {
+                            // Per-connection error: log and continue accepting.
+                            // Do NOT rethrow — the accept loop must survive
+                            // individual connection failures (e.g. vsock dial
+                            // errors, guest overload, transient network issues).
+                            log?.warning("relay connection handling failed, continuing accept loop: \(error)")
+                        }
                     }
                 } catch {
-                    log?.error("failed in unix socket relay loop: \(error)")
+                    log?.error("relay accept stream failed: \(error)")
                 }
-                try? FileManager.default.removeItem(at: hostConn)
             }
         }
     }
@@ -202,12 +213,16 @@ extension SocketRelay {
                 do {
                     defer { connectionStream.finish() }
                     for await connection in connectionStream {
-                        try await self.handleGuestVsockConn(
-                            vsockConn: connection,
-                            hostConnectionPath: hostPath,
-                            port: port,
-                            log: log
-                        )
+                        do {
+                            try await self.handleGuestVsockConn(
+                                vsockConn: connection,
+                                hostConnectionPath: hostPath,
+                                port: port,
+                                log: log
+                            )
+                        } catch {
+                            log?.warning("guest vsock connection handling failed, continuing: \(error)")
+                        }
                     }
                 } catch {
                     log?.error("failed to setup relay between vsock \(port) and \(hostPath.path): \(error)")
@@ -297,8 +312,10 @@ extension SocketRelay {
             )
         }
 
-        // `buf1` is thread-safe because it is only used when servicing a serial dispatch queue
-        nonisolated(unsafe) let buf1 = UnsafeMutableBufferPointer<UInt8>.allocate(capacity: Int(getpagesize()))
+        // 64KB buffer aligned with ConnectionRelay.bufferSize to prevent syscall amplification.
+        // Previously used getpagesize() (4KB) which caused 16x fragmentation.
+        let relayBufferSize = 65536
+        nonisolated(unsafe) let buf1 = UnsafeMutableBufferPointer<UInt8>.allocate(capacity: relayBufferSize)
         connSource.setEventHandler {
             Self.fdCopyHandler(
                 buffer: buf1,
@@ -309,8 +326,7 @@ extension SocketRelay {
             )
         }
 
-        // `buf2` is thread-safe because it is only used when servicing a serial dispatch queue
-        nonisolated(unsafe) let buf2 = UnsafeMutableBufferPointer<UInt8>.allocate(capacity: Int(getpagesize()))
+        nonisolated(unsafe) let buf2 = UnsafeMutableBufferPointer<UInt8>.allocate(capacity: relayBufferSize)
         vsockConnectionSource.setEventHandler {
             Self.fdCopyHandler(
                 buffer: buf2,
@@ -331,11 +347,14 @@ extension SocketRelay {
 
             // only close underlying fds when both sources are at EOF
             // ensure that one of the cancel handlers will see both sources cancelled
-            self.state.withLock { _ in
-                connSource.cancel()
+            self.state.withLock { state in
                 if vsockConnectionSource.isCancelled {
                     try? hostConn.close()
                     close(guestFd)
+                    // FM #12: Free page-sized buffers and remove relay sources entry
+                    buf1.deallocate()
+                    buf2.deallocate()
+                    state.relaySources.removeValue(forKey: pairID)
                 }
             }
         }
@@ -350,8 +369,7 @@ extension SocketRelay {
 
             // only close underlying fds when both sources are at EOF
             // ensure that one of the cancel handlers will see both sources cancelled
-            self.state.withLock { _ in
-                vsockConnectionSource.cancel()
+            self.state.withLock { state in
                 if connSource.isCancelled {
                     self.log?.info(
                         "close file descriptors",
@@ -361,6 +379,10 @@ extension SocketRelay {
                         ])
                     try? hostConn.close()
                     close(guestFd)
+                    // FM #12: Free page-sized buffers and remove relay sources entry
+                    buf1.deallocate()
+                    buf2.deallocate()
+                    state.relaySources.removeValue(forKey: pairID)
                 }
             }
         }
@@ -458,14 +480,15 @@ extension SocketRelay {
             if readResult <= 0 {
                 throw ContainerizationError(
                     .internalError,
-                    message: "missing pointer base address"
+                    message: "failed to read from source fd \(sourceFd): result \(readResult), errno \(errno)"
                 )
             }
             readBytesRemaining -= readResult
 
             var writeBytesRemaining = readResult
+            var writeOffset = 0
             while writeBytesRemaining > 0 {
-                let writeResult = write(destinationFd, baseAddr, writeBytesRemaining)
+                let writeResult = write(destinationFd, baseAddr + writeOffset, writeBytesRemaining)
                 if writeResult <= 0 {
                     throw ContainerizationError(
                         .internalError,
@@ -473,6 +496,7 @@ extension SocketRelay {
                     )
                 }
                 writeBytesRemaining -= writeResult
+                writeOffset += writeResult
             }
         }
     }

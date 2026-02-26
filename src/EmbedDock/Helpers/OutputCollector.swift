@@ -16,6 +16,7 @@
 
 import Foundation
 import Containerization
+import Logging
 
 // MARK: - Output Collector Helper
 
@@ -77,6 +78,49 @@ public final class OutputCollector: Writer, @unchecked Sendable {
     public var count: Int {
         lock.withLock {
             buffer.count
+        }
+    }
+}
+
+// MARK: - Logging Writer Helper
+
+/// A Writer that logs output lines as they arrive via a Logger.
+///
+/// Useful for capturing the main container process stdout/stderr
+/// so that application logs (e.g. Node.js startup errors) are
+/// visible in the host-side log stream.
+public final class LoggingWriter: Writer, @unchecked Sendable {
+    private let lock = NSLock()
+    private let logger: Logging.Logger
+    private let label: String
+    private var lineBuffer = Data()
+
+    public init(logger: Logging.Logger, label: String) {
+        self.logger = logger
+        self.label = label
+    }
+
+    public func write(_ data: Data) throws {
+        lock.withLock {
+            lineBuffer.append(data)
+            // Flush complete lines
+            while let newlineIndex = lineBuffer.firstIndex(of: UInt8(ascii: "\n")) {
+                let lineData = lineBuffer[lineBuffer.startIndex..<newlineIndex]
+                if let line = String(data: lineData, encoding: .utf8), !line.isEmpty {
+                    logger.info("[\(label)] \(line)")
+                }
+                lineBuffer.removeSubrange(lineBuffer.startIndex...newlineIndex)
+            }
+        }
+    }
+
+    public func close() throws {
+        // Flush any remaining partial line
+        lock.withLock {
+            if !lineBuffer.isEmpty, let line = String(data: lineBuffer, encoding: .utf8), !line.isEmpty {
+                logger.info("[\(label)] \(line)")
+            }
+            lineBuffer.removeAll()
         }
     }
 }
