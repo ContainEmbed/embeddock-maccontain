@@ -151,13 +151,18 @@ actor PodFactory {
     ///   - config: Container configuration.
     func addContainer(to pod: LinuxPod, config: ContainerConfiguration) async throws {
         logger.info("➕ [PodFactory] Adding container '\(config.containerID)' to pod")
-        
+
+        let stdoutWriter = LoggingWriter(logger: logger, label: "container:stdout")
+        let stderrWriter = LoggingWriter(logger: logger, label: "container:stderr")
+
         try await pod.addContainer(config.containerID, rootfs: config.rootfs) { containerConfig in
             containerConfig.hostname = config.hostname
             containerConfig.process.arguments = config.command
             containerConfig.process.workingDirectory = config.workingDirectory
             containerConfig.process.environmentVariables = config.environment
-            
+            containerConfig.process.stdout = stdoutWriter
+            containerConfig.process.stderr = stderrWriter
+
             // Add additional mounts (e.g., virtiofs shares)
             for mount in config.additionalMounts {
                 containerConfig.mounts.append(mount)

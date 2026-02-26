@@ -93,6 +93,7 @@ final class ContainerViewModel: ObservableObject {
         case .inactive: return .gray
         case .starting: return .yellow
         case .active: return .green
+        case .recovering: return .orange
         case .error: return .red
         }
     }

@@ -181,7 +181,7 @@ final class ContainerOperations {
             throw ContainerizationError(.invalidState, message: "No container is running")
         }
         
-        logger.info("🌐 [ContainerOperations] Checking API at localhost:\(port)")
+        logger.info("🌐 [ContainerOperations] Checking API at localhost:\(port)/api/filesize")
         
         // Use shared OutputCollector from Helpers/
         let stdoutCollector = OutputCollector()
@@ -206,9 +206,9 @@ final class ContainerOperations {
             processID: "api-check-\(UUID().uuidString.prefix(8))",
             configuration: { config in
                 if useWget {
-                    config.arguments = ["wget", "-q", "-O", "-", "-T", "10", "http://localhost:\(port)/"]
+                    config.arguments = ["wget", "-q", "-O", "-", "-T", "10", "http://127.0.0.1:\(port)/api/filesize"]
                 } else {
-                    config.arguments = ["curl", "-X", "GET", "-w", "\n%{http_code}", "-s", "-m", "10", "http://localhost:\(port)/"]
+                    config.arguments = ["curl", "-X", "GET", "-w", "\n%{http_code}", "-s", "-m", "10", "http://127.0.0.1:\(port)/api/filesize"]
                 }
                 config.workingDirectory = "/"
                 config.stdout = stdoutCollector

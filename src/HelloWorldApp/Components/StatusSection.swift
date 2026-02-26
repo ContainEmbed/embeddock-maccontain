@@ -208,6 +208,8 @@ struct PortForwardingStatusView: View {
             return .yellow
         case .active:
             return .green
+        case .recovering:
+            return .orange
         case .error:
             return .red
         }

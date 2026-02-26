@@ -347,7 +347,7 @@ extension LinuxPod {
                     for (index, i) in self.interfaces.enumerated() {
                         let name = "eth\(index)"
                         try await agent.addressAdd(name: name, address: i.address)
-                        try await agent.up(name: name, mtu: 1280)
+                        try await agent.up(name: name, mtu: 1500)
                         if let gateway = i.gateway {
                             try await agent.routeAddDefault(name: name, gateway: gateway)
                         }

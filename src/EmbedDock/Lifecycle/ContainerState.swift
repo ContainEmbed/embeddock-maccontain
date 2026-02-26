@@ -59,6 +59,7 @@ public enum ContainerStatus: Equatable, CustomStringConvertible {
         case inactive
         case starting
         case active(connections: Int)
+        case recovering(attempt: Int)
         case error(String)
 
         public var isActive: Bool {
@@ -71,6 +72,7 @@ public enum ContainerStatus: Equatable, CustomStringConvertible {
             case .inactive: return "Inactive"
             case .starting: return "Starting..."
             case .active(let count): return "Active (\(count) connection\(count == 1 ? "" : "s"))"
+            case .recovering(let attempt): return "Recovering (attempt \(attempt))..."
             case .error(let msg): return "Error: \(msg)"
             }
         }

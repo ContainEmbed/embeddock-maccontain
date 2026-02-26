@@ -127,7 +127,8 @@ final class NodeServerCoordinator {
             environment: [
                 "PATH=/usr/local/bin:/usr/bin:/bin",
                 "NODE_ENV=production",
-                "PORT=\(port)"
+                "PORT=\(port)",
+                "UNIX_SOCKET=/tmp/bridge-\(port).sock"
             ],
             rootfs: rootfs,
             additionalMounts: [

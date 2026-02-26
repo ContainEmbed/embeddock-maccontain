@@ -170,13 +170,11 @@ final class PostLaunchHandler {
     /// Creates a TcpPortForwarder and attempts to start it.
     private func setupPortForwarding(
         pod: LinuxPod,
-        port: Int,
-        bridgePort: UInt16 = 5000
+        port: Int
     ) async -> (TcpPortForwarder?, ForwardingStatus, String) {
         let forwarder = TcpPortForwarder(
             hostPort: UInt16(port),
             containerPort: UInt16(port),
-            bridgePort: bridgePort,
             pod: pod,
             logger: logger
         )

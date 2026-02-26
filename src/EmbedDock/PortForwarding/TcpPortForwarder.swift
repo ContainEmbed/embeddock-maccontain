@@ -23,11 +23,14 @@ import Network
 
 // MARK: - TCP Port Forwarder
 
-/// A TCP port forwarder that bridges host TCP connections to container via vsock.
+/// A TCP port forwarder that bridges host TCP connections to a container service
+/// via the framework's Unix socket relay mechanism.
 ///
 /// The TcpPortForwarder creates a network listener on the host that accepts
 /// incoming TCP connections and forwards them to a service running inside
-/// the container via vsock.
+/// the container. It uses `pod.relayUnixSocket()` to tunnel through vminitd
+/// via vsock. The container app listens directly on a Unix socket (direct mode),
+/// eliminating the need for socat or any guest-side bridge process.
 ///
 /// Architecture:
 /// ```
@@ -35,22 +38,18 @@ import Network
 ///        ↓
 /// [NWListener on macOS host]
 ///        ↓
-/// [pod.dialVsock(vsockPort) - connects to VM via vsock]
+/// [connect to host Unix socket → framework SocketRelay → vsock → vminitd]
 ///        ↓
-/// [Guest Bridge (socat/nc): vsockPort → containerPort via TCP inside container]
+/// [vminitd connects to guest Unix socket]
 ///        ↓
-/// Container Service (localhost:containerPort inside container)
+/// [Container app listening natively on guest Unix socket]
 /// ```
-///
-/// Note: The NAT network (192.168.127.0/24) is internal to the VM and not
-/// directly routable from macOS. We must use vsock as the transport.
 ///
 /// Usage:
 /// ```swift
 /// let forwarder = TcpPortForwarder(
 ///     hostPort: 3000,
 ///     containerPort: 3000,
-///     bridgePort: 5000,
 ///     pod: pod,
 ///     logger: logger
 /// )
@@ -61,49 +60,49 @@ import Network
 @MainActor
 public class TcpPortForwarder: ObservableObject {
     // MARK: - Configuration
-    
+
     private let hostPort: UInt16
     private let containerPort: UInt16
-    private let vsockPort: UInt32
     private let pod: LinuxPod
     private let logger: Logger
-    
+
+    // MARK: - Unix Socket Relay Paths
+
+    /// Path inside the container where the app listens on a Unix socket.
+    private let guestSocketPath: String
+
+    /// Path on the host where the framework creates the relay Unix socket.
+    private let hostSocketPath: String
+
     // MARK: - State
-    
+
     @Published private(set) public var status: ForwardingStatus = .inactive
     private var listener: NWListener?
     private var activeConnections: [UUID: ConnectionRelay] = [:]
     private var guestBridge: GuestBridge?
     private var connectionTasks: [UUID: Task<Void, Never>] = [:]
-    
-    // MARK: - Retry Configuration
-    
-    private let maxRetries = 5
-    private let baseRetryDelay: TimeInterval = 1.0
-    private let maxRetryDelay: TimeInterval = 30.0
-    
+
     // MARK: - Initialization
-    
+
     /// Create a new TCP port forwarder.
     ///
     /// - Parameters:
     ///   - hostPort: The port to listen on the host machine.
     ///   - containerPort: The port the service is running on inside the container.
-    ///   - bridgePort: The vsock port used for host-VM communication.
     ///   - pod: The LinuxPod containing the container.
     ///   - logger: Logger for diagnostics.
     public init(
         hostPort: UInt16 = 3000,
         containerPort: UInt16 = 3000,
-        bridgePort: UInt16 = 5000,
         pod: LinuxPod,
         logger: Logger
     ) {
         self.hostPort = hostPort
         self.containerPort = containerPort
-        self.vsockPort = UInt32(bridgePort)
         self.pod = pod
         self.logger = logger
+        self.guestSocketPath = "/tmp/bridge-\(containerPort).sock"
+        self.hostSocketPath = NSTemporaryDirectory() + "embeddock-bridge-\(containerPort).sock"
     }
     
     // MARK: - Lifecycle
@@ -114,26 +113,42 @@ public class TcpPortForwarder: ObservableObject {
             logger.warning("⚠️ [TcpPortForwarder] Already running or starting")
             return
         }
-        
+
         status = .starting
-        logger.info("🚀 [TcpPortForwarder] Starting port forwarding: localhost:\(hostPort) -> container:\(containerPort) via vsock:\(vsockPort)")
-        
+        logger.info("🚀 [TcpPortForwarder] Starting port forwarding: localhost:\(hostPort) -> container:\(containerPort) via Unix socket relay")
+
         do {
-            // Step 1: Start guest bridge that listens on vsock and forwards to container TCP
-            logger.info("📡 [TcpPortForwarder] Step 1: Starting guest vsock bridge")
+            // Step 1: Set up the guest-side bridge (direct mode — app listens on Unix socket natively).
             guestBridge = GuestBridge(pod: pod, logger: logger)
-            try await guestBridge?.startVsockBridge(vsockPort: vsockPort, tcpPort: Int(containerPort))
-            
-            // Give the bridge a moment to start
-            try await Task.sleep(for: .milliseconds(500))
-            
-            // Step 2: Create NWListener on host
-            logger.info("📡 [TcpPortForwarder] Step 2: Creating TCP listener on port \(hostPort)")
+            logger.info("📡 [TcpPortForwarder] Step 1: Direct mode — polling for guest Unix socket")
+            try await guestBridge?.startDirectMode(socketPath: guestSocketPath)
+
+            // Step 2: Set up the framework's Unix socket relay.
+            // This tells vminitd to listen on a vsock port and connect to the
+            // guest Unix socket when connections arrive. It also creates a host-side
+            // Unix socket that the framework relays through vsock.
+            logger.info("📡 [TcpPortForwarder] Step 2: Setting up Unix socket relay via framework")
+
+            // Clean up any stale host socket file
+            try? FileManager.default.removeItem(atPath: hostSocketPath)
+
+            let socketConfig = UnixSocketConfiguration(
+                source: URL(filePath: guestSocketPath),
+                destination: URL(filePath: hostSocketPath),
+                direction: .outOf
+            )
+            try await pod.relayUnixSocket("main", socket: socketConfig)
+
+            // Poll for host socket instead of hardcoded sleep
+            try await pollForHostSocket(timeout: .seconds(5))
+
+            // Step 3: Create NWListener on host
+            logger.info("📡 [TcpPortForwarder] Step 3: Creating TCP listener on port \(hostPort)")
             try await startListener()
-            
+
             status = .active(connections: 0)
             logger.info("✅ [TcpPortForwarder] Port forwarding active: localhost:\(hostPort) -> container:\(containerPort)")
-            
+
         } catch {
             logger.error("❌ [TcpPortForwarder] Failed to start: \(error)")
             status = .error(error.localizedDescription)
@@ -162,17 +177,17 @@ public class TcpPortForwarder: ObservableObject {
             task.cancel()
         }
         connectionTasks.removeAll()
-        
+
         // Phase 2: Close all active connections (immediate, synchronous)
         for (_, relay) in activeConnections {
             relay.close()
         }
         activeConnections.removeAll()
-        
+
         // Phase 3: Stop listener (immediate)
         listener?.cancel()
         listener = nil
-        
+
         // Phase 4: Stop guest bridge with 3 second timeout
         if let bridge = guestBridge {
             do {
@@ -185,6 +200,9 @@ public class TcpPortForwarder: ObservableObject {
             }
         }
         guestBridge = nil
+
+        // Phase 5: Clean up host socket file
+        try? FileManager.default.removeItem(atPath: hostSocketPath)
     }
     
     // MARK: - Listener Management
@@ -192,6 +210,11 @@ public class TcpPortForwarder: ObservableObject {
     private func startListener() async throws {
         let parameters = NWParameters.tcp
         parameters.allowLocalEndpointReuse = true
+
+        // Enable TCP_NODELAY to disable Nagle's algorithm for lower latency
+        if let tcp = parameters.defaultProtocolStack.transportProtocol as? NWProtocolTCP.Options {
+            tcp.noDelay = true
+        }
         
         do {
             listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: hostPort)!)
@@ -282,25 +305,25 @@ public class TcpPortForwarder: ObservableObject {
     private func handleNewConnection(_ incomingConnection: NWConnection) async {
         let connectionID = UUID()
         logger.info("📥 [TcpPortForwarder] New connection: \(connectionID)")
-        
+
         // Start the incoming connection
         incomingConnection.start(queue: .global(qos: .userInitiated))
-        
-        // Create a task to handle this connection via vsock
+
+        // Create a task to handle this connection via the Unix socket relay
         let task = Task { [weak self] in
             guard let self = self else { return }
-            await self.relayConnectionViaVsock(connectionID: connectionID, incoming: incomingConnection)
+            await self.relayConnectionViaUnixSocket(connectionID: connectionID, incoming: incomingConnection)
         }
-        
+
         connectionTasks[connectionID] = task
     }
-    
-    private func relayConnectionViaVsock(connectionID: UUID, incoming: NWConnection) async {
-        var vsockHandle: FileHandle? = nil
-        
+
+    private func relayConnectionViaUnixSocket(connectionID: UUID, incoming: NWConnection) async {
+        var socketHandle: FileHandle? = nil
+
         defer {
             incoming.cancel()
-            try? vsockHandle?.close()
+            try? socketHandle?.close()
             Task { @MainActor in
                 self.activeConnections.removeValue(forKey: connectionID)
                 self.connectionTasks.removeValue(forKey: connectionID)
@@ -308,7 +331,7 @@ public class TcpPortForwarder: ObservableObject {
                 self.logger.info("🔌 [TcpPortForwarder] Connection closed: \(connectionID)")
             }
         }
-        
+
         // Wait for incoming connection to be ready
         do {
             try await waitForConnectionReady(incoming)
@@ -317,37 +340,37 @@ public class TcpPortForwarder: ObservableObject {
             logger.warning("⚠️ [TcpPortForwarder] Incoming connection failed: \(error)")
             return
         }
-        
-        // Connect to the VM via vsock
-        logger.debug("🔗 [TcpPortForwarder] Dialing vsock port \(vsockPort)")
+
+        // Connect to the host-side Unix socket (framework relay endpoint)
+        logger.debug("🔗 [TcpPortForwarder] Connecting to host Unix socket: \(hostSocketPath)")
         do {
-            vsockHandle = try await pod.dialVsock(port: vsockPort)
-            logger.debug("✅ [TcpPortForwarder] Vsock connection established")
+            socketHandle = try connectToUnixSocket(path: hostSocketPath)
+            logger.debug("✅ [TcpPortForwarder] Unix socket connection established")
         } catch {
-            logger.warning("⚠️ [TcpPortForwarder] Failed to dial vsock:\(vsockPort): \(error)")
+            logger.warning("⚠️ [TcpPortForwarder] Failed to connect to Unix socket \(hostSocketPath): \(error)")
             return
         }
-        
-        guard let vsock = vsockHandle else {
-            logger.warning("⚠️ [TcpPortForwarder] Vsock handle is nil")
+
+        guard let unixSocket = socketHandle else {
+            logger.warning("⚠️ [TcpPortForwarder] Unix socket handle is nil")
             return
         }
-        
-        // Create a relay wrapper
+
+        // Create a relay wrapper — ConnectionRelay works with any FileHandle
         let relay = ConnectionRelay(
             connectionID: connectionID,
             tcpConnection: incoming,
-            vsockHandle: vsock,
+            vsockHandle: unixSocket,
             logger: logger
         )
-        
+
         await MainActor.run {
             activeConnections[connectionID] = relay
             updateConnectionCount()
         }
-        
+
         logger.info("🔗 [TcpPortForwarder] Relay established for \(connectionID)")
-        
+
         // Start bidirectional relay
         await relay.startRelay()
     }
@@ -382,5 +405,78 @@ public class TcpPortForwarder: ObservableObject {
         if case .active = status {
             status = .active(connections: count)
         }
+    }
+
+    // MARK: - Host Socket Polling
+
+    /// Poll until the host-side Unix socket file appears, replacing hardcoded sleeps.
+    private func pollForHostSocket(timeout: Duration) async throws {
+        let deadline = ContinuousClock.now + timeout
+        while ContinuousClock.now < deadline {
+            if FileManager.default.fileExists(atPath: hostSocketPath) {
+                logger.debug("✅ [TcpPortForwarder] Host socket ready: \(hostSocketPath)")
+                return
+            }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        throw ContainerizationError(
+            .timeout,
+            message: "Host Unix socket not created within \(timeout) at \(hostSocketPath)"
+        )
+    }
+
+    // MARK: - Unix Socket Connection
+
+    /// Connect to a Unix domain socket at the given path and return a FileHandle.
+    ///
+    /// Uses POSIX socket APIs to create an AF_UNIX connection. The returned
+    /// FileHandle is compatible with ConnectionRelay (same interface as vsock).
+    private nonisolated func connectToUnixSocket(path: String) throws -> FileHandle {
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else {
+            throw ContainerizationError(
+                .internalError,
+                message: "Failed to create Unix socket: errno \(errno)"
+            )
+        }
+
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+
+        let maxPathLen = MemoryLayout.size(ofValue: addr.sun_path) - 1
+        guard path.utf8.count <= maxPathLen else {
+            close(fd)
+            throw ContainerizationError(
+                .internalError,
+                message: "Unix socket path too long (\(path.utf8.count) > \(maxPathLen))"
+            )
+        }
+
+        withUnsafeMutablePointer(to: &addr.sun_path.0) { ptr in
+            path.withCString { cstr in
+                _ = strcpy(ptr, cstr)
+            }
+        }
+
+        let addrLen = socklen_t(
+            MemoryLayout<sockaddr_un>.offset(of: \.sun_path)! + path.utf8.count + 1
+        )
+
+        let connectResult = withUnsafePointer(to: &addr) { addrPtr in
+            addrPtr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPtr in
+                Foundation.connect(fd, sockaddrPtr, addrLen)
+            }
+        }
+
+        guard connectResult == 0 else {
+            let errNo = errno
+            close(fd)
+            throw ContainerizationError(
+                .internalError,
+                message: "Failed to connect to Unix socket at \(path): errno \(errNo)"
+            )
+        }
+
+        return FileHandle(fileDescriptor: fd, closeOnDealloc: true)
     }
 }

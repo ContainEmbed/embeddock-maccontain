@@ -17,6 +17,7 @@
 import Foundation
 import Network
 import Logging
+import Synchronization
 
 // MARK: - Connection Relay
 
@@ -39,10 +40,16 @@ final class ConnectionRelay: @unchecked Sendable {
     private let logger: Logger
     private var isClosed = false
     private let lock = NSLock()
-    
+
     /// Buffer size for data transfers.
     private let bufferSize = 65536
-    
+
+    /// FM #2: Idle timeout — connections with no data transfer for this duration are closed.
+    private let idleTimeout: Duration = .seconds(300)
+
+    /// Tracks last data activity for idle timeout detection.
+    private let lastActivity = Mutex<ContinuousClock.Instant>(.now)
+
     init(
         connectionID: UUID,
         tcpConnection: NWConnection,
@@ -54,9 +61,9 @@ final class ConnectionRelay: @unchecked Sendable {
         self.vsockHandle = vsockHandle
         self.logger = logger
     }
-    
+
     // MARK: - Lifecycle
-    
+
     /// Close the relay and cleanup resources.
     func close() {
         lock.withLock {
@@ -66,86 +73,180 @@ final class ConnectionRelay: @unchecked Sendable {
         tcpConnection.cancel()
         try? vsockHandle.close()
     }
-    
+
     /// Start the bidirectional relay.
     ///
-    /// This method runs until either side closes or an error occurs.
+    /// This method runs until either side closes, an error occurs,
+    /// or the idle timeout expires (FM #2).
     func startRelay() async {
+        // FM #8: Monitor NWConnection state for failures
+        tcpConnection.stateUpdateHandler = { [weak self] state in
+            guard let self else { return }
+            switch state {
+            case .failed, .cancelled:
+                self.close()
+            default:
+                break
+            }
+        }
+
         await withTaskGroup(of: Void.self) { group in
             // TCP -> Vsock
             group.addTask {
                 await self.relayTcpToVsock()
             }
-            
+
             // Vsock -> TCP
             group.addTask {
                 await self.relayVsockToTcp()
             }
+
+            // FM #2: Idle timeout watchdog
+            group.addTask {
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(30))
+                    guard !Task.isCancelled else { break }
+                    let last = self.lastActivity.withLock { $0 }
+                    if ContinuousClock.now - last > self.idleTimeout {
+                        self.logger.info("⏰ [Relay:\(self.connectionID.uuidString.prefix(8))] Idle timeout (\(self.idleTimeout)) exceeded, closing")
+                        self.close()
+                        break
+                    }
+                }
+            }
         }
-        
+
         close()
     }
-    
+
     // MARK: - Relay Directions
-    
+
     /// Relay data from TCP to Vsock.
+    ///
+    /// The write to the vsock FileHandle is dispatched to a GCD queue
+    /// to avoid blocking a Swift concurrency cooperative thread.
     private func relayTcpToVsock() async {
         let shortID = connectionID.uuidString.prefix(8)
-        
+
         while !Task.isCancelled {
             do {
                 let data = try await receiveTcpData()
-                
+
                 guard let data = data, !data.isEmpty else {
                     logger.debug("📤 [Relay:\(shortID)] TCP->Vsock EOF")
                     break
                 }
-                
-                try vsockHandle.write(contentsOf: data)
+
+                // Dispatch blocking write to GCD to avoid stalling
+                // the Swift concurrency cooperative thread pool.
+                try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+                    DispatchQueue.global(qos: .userInitiated).async { [self] in
+                        do {
+                            try self.vsockHandle.write(contentsOf: data)
+                            cont.resume()
+                        } catch {
+                            cont.resume(throwing: error)
+                        }
+                    }
+                }
+                lastActivity.withLock { $0 = .now }
                 logger.debug("📤 [Relay:\(shortID)] TCP->Vsock \(data.count) bytes")
-                
+
             } catch {
                 logger.debug("⚠️ [Relay:\(shortID)] TCP->Vsock error: \(error)")
                 break
             }
         }
     }
-    
-    /// Relay data from Vsock to TCP.
+
+    /// Relay data from Vsock to TCP using non-blocking DispatchSourceRead.
+    ///
+    /// Instead of blocking a GCD thread on `vsockHandle.read()`, this uses
+    /// a DispatchSourceRead on the file descriptor. The kernel notifies us
+    /// via kqueue when data is available, eliminating one blocked thread
+    /// per connection.
+    ///
+    /// Backpressure: the dispatch source is suspended while a TCP send is
+    /// in flight, preventing unbounded memory growth with slow clients.
     private func relayVsockToTcp() async {
         let shortID = connectionID.uuidString.prefix(8)
-        
-        while !Task.isCancelled {
-            do {
-                // Read from vsock (FileHandle)
-                let data: Data? = try await withCheckedThrowingContinuation { continuation in
-                    DispatchQueue.global(qos: .userInitiated).async { [self] in
-                        do {
-                            let data = try self.vsockHandle.read(upToCount: self.bufferSize)
-                            continuation.resume(returning: data)
-                        } catch {
-                            continuation.resume(throwing: error)
-                        }
+        let fd = vsockHandle.fileDescriptor
+
+        // Set non-blocking mode (required for DispatchSourceRead)
+        let flags = fcntl(fd, F_GETFL)
+        if flags >= 0 {
+            _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
+        }
+
+        // Pre-allocate a single read buffer for the lifetime of this relay,
+        // avoiding per-event malloc/free overhead.
+        let readBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: bufferSize)
+
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let source = DispatchSource.makeReadSource(
+                fileDescriptor: fd,
+                queue: .global(qos: .userInitiated)
+            )
+
+            source.setEventHandler { [weak self] in
+                guard let self else {
+                    source.cancel()
+                    return
+                }
+
+                if source.data == 0 {
+                    self.logger.debug("📤 [Relay:\(shortID)] Vsock->TCP EOF")
+                    source.cancel()
+                    return
+                }
+
+                let readSize = min(Int(source.data), self.bufferSize)
+                let bytesRead = read(fd, readBuffer, readSize)
+
+                guard bytesRead > 0 else {
+                    if bytesRead == 0 {
+                        // Clean EOF
+                        self.logger.debug("📤 [Relay:\(shortID)] Vsock->TCP EOF (read 0)")
+                        source.cancel()
+                    } else if errno != EAGAIN && errno != EWOULDBLOCK {
+                        // Real error (not just "try again")
+                        self.logger.debug("⚠️ [Relay:\(shortID)] Vsock->TCP read error: errno \(errno)")
+                        source.cancel()
                     }
+                    // EAGAIN/EWOULDBLOCK: source will fire again when data available
+                    return
                 }
-                
-                guard let data = data, !data.isEmpty else {
-                    logger.debug("📤 [Relay:\(shortID)] Vsock->TCP EOF")
-                    break
-                }
-                
-                try await sendTcpData(data)
-                logger.debug("📤 [Relay:\(shortID)] Vsock->TCP \(data.count) bytes")
-                
-            } catch {
-                logger.debug("⚠️ [Relay:\(shortID)] Vsock->TCP error: \(error)")
-                break
+
+                let data = Data(bytes: readBuffer, count: bytesRead)
+
+                self.lastActivity.withLock { $0 = .now }
+                self.logger.debug("📤 [Relay:\(shortID)] Vsock->TCP \(bytesRead) bytes")
+
+                // Suspend the source to apply backpressure: do not read more
+                // data until the current TCP send completes. This prevents
+                // unbounded memory growth when the TCP client is slow.
+                source.suspend()
+                self.tcpConnection.send(content: data, completion: .contentProcessed { error in
+                    if let error {
+                        self.logger.debug("⚠️ [Relay:\(shortID)] Vsock->TCP send error: \(error)")
+                        source.cancel()
+                    } else {
+                        source.resume()
+                    }
+                })
             }
+
+            source.setCancelHandler {
+                readBuffer.deallocate()
+                continuation.resume()
+            }
+
+            source.activate()
         }
     }
-    
+
     // MARK: - TCP Operations
-    
+
     /// Receive data from the TCP connection.
     private func receiveTcpData() async throws -> Data? {
         try await withCheckedThrowingContinuation { continuation in
@@ -158,19 +259,6 @@ final class ConnectionRelay: @unchecked Sendable {
                     continuation.resume(returning: content)
                 }
             }
-        }
-    }
-    
-    /// Send data over the TCP connection.
-    private func sendTcpData(_ data: Data) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            tcpConnection.send(content: data, completion: .contentProcessed { error in
-                if let error = error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume()
-                }
-            })
         }
     }
 }

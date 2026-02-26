@@ -25,22 +25,25 @@ import Foundation
 public enum ForwardingStatus: Equatable, Sendable {
     /// Port forwarding is not active.
     case inactive
-    
+
     /// Port forwarding is in the process of starting.
     case starting
-    
+
     /// Port forwarding is active with the specified number of connections.
     case active(connections: Int)
-    
+
+    /// Port forwarding detected a failure and is recovering.
+    case recovering(attempt: Int)
+
     /// An error occurred during port forwarding.
     case error(String)
-    
+
     /// Whether port forwarding is currently active.
     public var isActive: Bool {
         if case .active = self { return true }
         return false
     }
-    
+
     /// A human-readable description of the status.
     public var description: String {
         switch self {
@@ -50,6 +53,8 @@ public enum ForwardingStatus: Equatable, Sendable {
             return "Starting..."
         case .active(let count):
             return "Active (\(count) connection\(count == 1 ? "" : "s"))"
+        case .recovering(let attempt):
+            return "Recovering (attempt \(attempt))..."
         case .error(let message):
             return "Error: \(message)"
         }

@@ -149,12 +149,12 @@ final class DiagnosticsHelper: @unchecked Sendable {
         let probeArgs: [String]
         switch tool {
         case .curl:
-            probeArgs = ["curl", "-s", "-m", "3", "-o", "/dev/null", "-w", "%{http_code}", "http://localhost:\(port)/"]
+            probeArgs = ["curl", "-s", "-m", "3", "-o", "/dev/null", "-w", "%{http_code}", "http://127.0.0.1:\(port)/"]
         case .wget:
-            probeArgs = ["wget", "-q", "-O", "/dev/null", "--timeout=3", "--spider", "http://localhost:\(port)/"]
+            probeArgs = ["wget", "-q", "-O", "/dev/null", "--timeout=3", "--spider", "http://127.0.0.1:\(port)/"]
         case .shell:
             // Bash /dev/tcp probe — only checks connectivity, not HTTP.
-            probeArgs = ["bash", "-c", "echo -e \"GET / HTTP/1.0\\r\\n\\r\\n\" > /dev/tcp/localhost/\(port)"]
+            probeArgs = ["bash", "-c", "echo -e \"GET / HTTP/1.0\\r\\n\\r\\n\" > /dev/tcp/127.0.0.1/\(port)"]
         }
 
         do {
@@ -414,6 +414,105 @@ final class DiagnosticsHelper: @unchecked Sendable {
         case 15: return "SIGTERM"
         default: return "UNKNOWN"
         }
+    }
+
+    // MARK: - Forwarding Chain Health (FM #13)
+
+    /// Result of a forwarding chain health check.
+    struct ForwardingChainHealth {
+        let hostSocketExists: Bool
+        let hostSocketConnectable: Bool
+        let guestBridgeHealthy: Bool
+        let containerPortListening: Bool
+
+        var overallHealthy: Bool {
+            hostSocketExists && hostSocketConnectable && guestBridgeHealthy && containerPortListening
+        }
+
+        var summary: String {
+            var parts: [String] = []
+            parts.append("Host socket: \(hostSocketExists ? "exists" : "MISSING")")
+            parts.append("Host connectable: \(hostSocketConnectable ? "yes" : "NO")")
+            parts.append("Guest bridge: \(guestBridgeHealthy ? "healthy" : "UNHEALTHY")")
+            parts.append("Container port: \(containerPortListening ? "listening" : "NOT LISTENING")")
+            return parts.joined(separator: ", ")
+        }
+    }
+
+    /// Check each segment of the port forwarding chain.
+    ///
+    /// Tests: host socket file exists, host socket connectable (AF_UNIX),
+    /// guest bridge alive, container port listening.
+    func checkForwardingChainHealth(
+        hostSocketPath: String,
+        guestBridge: GuestBridge?,
+        guestSocketPath: String,
+        pod: LinuxPod?,
+        containerPort: Int
+    ) async -> ForwardingChainHealth {
+        // 1. Host socket file exists
+        let hostSocketExists = FileManager.default.fileExists(atPath: hostSocketPath)
+
+        // 2. Host socket is connectable
+        var hostSocketConnectable = false
+        if hostSocketExists {
+            let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+            if fd >= 0 {
+                var addr = sockaddr_un()
+                addr.sun_family = sa_family_t(AF_UNIX)
+                withUnsafeMutablePointer(to: &addr.sun_path.0) { ptr in
+                    hostSocketPath.withCString { cstr in
+                        _ = strcpy(ptr, cstr)
+                    }
+                }
+                let addrLen = socklen_t(
+                    MemoryLayout<sockaddr_un>.offset(of: \.sun_path)! + hostSocketPath.utf8.count + 1
+                )
+                let result = withUnsafePointer(to: &addr) { addrPtr in
+                    addrPtr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPtr in
+                        Foundation.connect(fd, sockaddrPtr, addrLen)
+                    }
+                }
+                hostSocketConnectable = (result == 0)
+                close(fd)
+            }
+        }
+
+        // 3. Guest bridge healthy
+        var guestBridgeHealthy = false
+        if let bridge = guestBridge {
+            guestBridgeHealthy = await bridge.checkBridgeHealth(socketPath: guestSocketPath)
+        }
+
+        // 4. Container port listening
+        var containerPortListening = false
+        if let pod = pod {
+            do {
+                let process = try await pod.execInContainer(
+                    "main",
+                    processID: "check-port-\(UUID().uuidString.prefix(8))",
+                    configuration: { config in
+                        config.arguments = ["sh", "-c", "ss -tln 2>/dev/null | grep -q ':\\(containerPort)' || netstat -tln 2>/dev/null | grep -q ':\\(containerPort)'"]
+                        config.workingDirectory = "/"
+                    }
+                )
+                try await process.start()
+                let status = try await process.wait(timeoutInSeconds: 5)
+                containerPortListening = status.exitCode == 0
+            } catch {
+                logger.debug("⚠️ [DiagnosticsHelper] Port check failed: \(error)")
+            }
+        }
+
+        let health = ForwardingChainHealth(
+            hostSocketExists: hostSocketExists,
+            hostSocketConnectable: hostSocketConnectable,
+            guestBridgeHealthy: guestBridgeHealthy,
+            containerPortListening: containerPortListening
+        )
+
+        logger.info("🏥 [DiagnosticsHelper] Forwarding chain health: \(health.summary)")
+        return health
     }
 }
 
