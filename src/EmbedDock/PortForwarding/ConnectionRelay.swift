@@ -19,6 +19,33 @@ import Network
 import Logging
 import Synchronization
 
+// MARK: - POSIX Errno Helper
+
+/// Return a human-readable POSIX name for a given errno value.
+///
+/// Makes log lines like "errno EPIPE" immediately actionable vs raw numbers.
+private func errnoPOSIXName(_ code: Int32) -> String {
+    switch code {
+    case EPIPE:        return "EPIPE(\(code))"
+    case ECONNRESET:   return "ECONNRESET(\(code))"
+    case EBADF:        return "EBADF(\(code))"
+    case EAGAIN:       return "EAGAIN(\(code))"
+    case EWOULDBLOCK:  return "EWOULDBLOCK(\(code))"
+    case ENOBUFS:      return "ENOBUFS(\(code))"
+    case ETIMEDOUT:    return "ETIMEDOUT(\(code))"
+    case ENOTCONN:     return "ENOTCONN(\(code))"
+    case ENETDOWN:     return "ENETDOWN(\(code))"
+    case ENETUNREACH:  return "ENETUNREACH(\(code))"
+    case ECONNREFUSED: return "ECONNREFUSED(\(code))"
+    case EIO:          return "EIO(\(code))"
+    case ENOMEM:       return "ENOMEM(\(code))"
+    case EFAULT:       return "EFAULT(\(code))"
+    case EINVAL:       return "EINVAL(\(code))"
+    case ENOSPC:       return "ENOSPC(\(code))"
+    default:           return "errno(\(code))"
+    }
+}
+
 // MARK: - Connection Relay
 
 /// Handles bidirectional data relay between a TCP connection and a vsock FileHandle.
@@ -50,6 +77,13 @@ final class ConnectionRelay: @unchecked Sendable {
     /// Tracks last data activity for idle timeout detection.
     private let lastActivity = Mutex<ContinuousClock.Instant>(.now)
 
+    /// Relay creation time — used to measure how long the relay stays alive.
+    private let startTime = ContinuousClock.now
+
+    /// Cumulative byte counters for diagnostics.
+    private let tcpToVsockBytes = Mutex<Int>(0)
+    private let vsockToTcpBytes = Mutex<Int>(0)
+
     init(
         connectionID: UUID,
         tcpConnection: NWConnection,
@@ -65,11 +99,30 @@ final class ConnectionRelay: @unchecked Sendable {
     // MARK: - Lifecycle
 
     /// Close the relay and cleanup resources.
-    func close() {
+    ///
+    /// - Parameter reason: Human-readable description of why the relay is being closed.
+    ///   Used to diagnose premature or unexpected closures in logs.
+    func close(reason: String = "unspecified") {
+        var alreadyClosed = false
         lock.withLock {
-            guard !isClosed else { return }
-            isClosed = true
+            if isClosed {
+                alreadyClosed = true
+            } else {
+                isClosed = true
+            }
         }
+
+        let shortID = connectionID.uuidString.prefix(8)
+        let elapsed = ContinuousClock.now - startTime
+        let tx = tcpToVsockBytes.withLock { $0 }
+        let rx = vsockToTcpBytes.withLock { $0 }
+
+        if alreadyClosed {
+            logger.debug("🔒 [Relay:\(shortID)] close() called again (already closed) — reason: \(reason)")
+            return
+        }
+
+        logger.info("🔒 [Relay:\(shortID)] Closing relay — reason: \(reason), lifetime: \(elapsed), tcp→vsock: \(tx)B, vsock→tcp: \(rx)B")
         tcpConnection.cancel()
         try? vsockHandle.close()
     }
@@ -79,12 +132,23 @@ final class ConnectionRelay: @unchecked Sendable {
     /// This method runs until either side closes, an error occurs,
     /// or the idle timeout expires (FM #2).
     func startRelay() async {
+        let shortID = connectionID.uuidString.prefix(8)
+        logger.info("▶️ [Relay:\(shortID)] Starting bidirectional relay (vsockFd:\(vsockHandle.fileDescriptor))")
+
         // FM #8: Monitor NWConnection state for failures
         tcpConnection.stateUpdateHandler = { [weak self] state in
             guard let self else { return }
             switch state {
-            case .failed, .cancelled:
-                self.close()
+            case .failed(let error):
+                self.logger.warning("⚠️ [Relay:\(shortID)] TCP connection failed: \(error)")
+                self.close(reason: "tcp-failed:\(error)")
+            case .cancelled:
+                self.logger.info("ℹ️ [Relay:\(shortID)] TCP state: cancelled")
+                self.close(reason: "tcp-cancelled")
+            case .ready:
+                self.logger.debug("✅ [Relay:\(shortID)] TCP state: ready")
+            case .waiting(let error):
+                self.logger.warning("⏳ [Relay:\(shortID)] TCP state: waiting (\(error))")
             default:
                 break
             }
@@ -108,15 +172,16 @@ final class ConnectionRelay: @unchecked Sendable {
                     guard !Task.isCancelled else { break }
                     let last = self.lastActivity.withLock { $0 }
                     if ContinuousClock.now - last > self.idleTimeout {
-                        self.logger.info("⏰ [Relay:\(self.connectionID.uuidString.prefix(8))] Idle timeout (\(self.idleTimeout)) exceeded, closing")
-                        self.close()
+                        self.logger.info("⏰ [Relay:\(shortID)] Idle timeout (\(self.idleTimeout)) exceeded, closing")
+                        self.close(reason: "idle-timeout")
                         break
                     }
                 }
             }
         }
 
-        close()
+        logger.info("⏹️ [Relay:\(shortID)] Task group finished")
+        close(reason: "relay-complete")
     }
 
     // MARK: - Relay Directions
@@ -127,13 +192,15 @@ final class ConnectionRelay: @unchecked Sendable {
     /// to avoid blocking a Swift concurrency cooperative thread.
     private func relayTcpToVsock() async {
         let shortID = connectionID.uuidString.prefix(8)
+        logger.debug("📥 [Relay:\(shortID)] TCP->Vsock relay started (vsockFd:\(vsockHandle.fileDescriptor))")
 
         while !Task.isCancelled {
             do {
                 let data = try await receiveTcpData()
 
                 guard let data = data, !data.isEmpty else {
-                    logger.debug("📤 [Relay:\(shortID)] TCP->Vsock EOF")
+                    logger.info("📤 [Relay:\(shortID)] TCP->Vsock EOF (connection closed by peer)")
+                    close(reason: "tcp-eof")
                     break
                 }
 
@@ -149,14 +216,18 @@ final class ConnectionRelay: @unchecked Sendable {
                         }
                     }
                 }
+                tcpToVsockBytes.withLock { $0 += data.count }
                 lastActivity.withLock { $0 = .now }
                 logger.debug("📤 [Relay:\(shortID)] TCP->Vsock \(data.count) bytes")
 
             } catch {
-                logger.debug("⚠️ [Relay:\(shortID)] TCP->Vsock error: \(error)")
+                logger.warning("⚠️ [Relay:\(shortID)] TCP->Vsock error: \(error)")
+                close(reason: "tcp-to-vsock-error:\(error)")
                 break
             }
         }
+
+        logger.debug("📥 [Relay:\(shortID)] TCP->Vsock relay loop exited")
     }
 
     /// Relay data from Vsock to TCP using non-blocking DispatchSourceRead.
@@ -171,11 +242,15 @@ final class ConnectionRelay: @unchecked Sendable {
     private func relayVsockToTcp() async {
         let shortID = connectionID.uuidString.prefix(8)
         let fd = vsockHandle.fileDescriptor
+        logger.debug("📥 [Relay:\(shortID)] Vsock->TCP relay started (vsockFd:\(fd))")
 
         // Set non-blocking mode (required for DispatchSourceRead)
         let flags = fcntl(fd, F_GETFL)
         if flags >= 0 {
             _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
+            logger.debug("📥 [Relay:\(shortID)] vsockFd:\(fd) set to non-blocking")
+        } else {
+            logger.warning("⚠️ [Relay:\(shortID)] fcntl F_GETFL failed on vsockFd:\(fd) — \(errnoPOSIXName(errno))")
         }
 
         // Pre-allocate a single read buffer for the lifetime of this relay,
@@ -195,7 +270,9 @@ final class ConnectionRelay: @unchecked Sendable {
                 }
 
                 if source.data == 0 {
-                    self.logger.debug("📤 [Relay:\(shortID)] Vsock->TCP EOF")
+                    // kqueue reports data==0 when the fd is closed/EOF
+                    self.logger.info("📤 [Relay:\(shortID)] Vsock->TCP EOF (source.data==0, vsockFd:\(fd)) — likely vsock fd was closed")
+                    self.close(reason: "vsock-eof-source-data-zero")
                     source.cancel()
                     return
                 }
@@ -205,20 +282,26 @@ final class ConnectionRelay: @unchecked Sendable {
 
                 guard bytesRead > 0 else {
                     if bytesRead == 0 {
-                        // Clean EOF
-                        self.logger.debug("📤 [Relay:\(shortID)] Vsock->TCP EOF (read 0)")
+                        // Clean EOF from read()
+                        self.logger.info("📤 [Relay:\(shortID)] Vsock->TCP EOF (read returned 0, vsockFd:\(fd))")
+                        self.close(reason: "vsock-eof-read-zero")
                         source.cancel()
-                    } else if errno != EAGAIN && errno != EWOULDBLOCK {
-                        // Real error (not just "try again")
-                        self.logger.debug("⚠️ [Relay:\(shortID)] Vsock->TCP read error: errno \(errno)")
-                        source.cancel()
+                    } else {
+                        let capturedErrno = errno
+                        if capturedErrno != EAGAIN && capturedErrno != EWOULDBLOCK {
+                            // Real error (not just "try again")
+                            self.logger.warning("⚠️ [Relay:\(shortID)] Vsock->TCP read error on fd:\(fd): \(errnoPOSIXName(capturedErrno))")
+                            self.close(reason: "vsock-read-error:\(errnoPOSIXName(capturedErrno))")
+                            source.cancel()
+                        }
+                        // EAGAIN/EWOULDBLOCK: source will fire again when data available
                     }
-                    // EAGAIN/EWOULDBLOCK: source will fire again when data available
                     return
                 }
 
                 let data = Data(bytes: readBuffer, count: bytesRead)
 
+                self.vsockToTcpBytes.withLock { $0 += bytesRead }
                 self.lastActivity.withLock { $0 = .now }
                 self.logger.debug("📤 [Relay:\(shortID)] Vsock->TCP \(bytesRead) bytes")
 
@@ -228,7 +311,8 @@ final class ConnectionRelay: @unchecked Sendable {
                 source.suspend()
                 self.tcpConnection.send(content: data, completion: .contentProcessed { error in
                     if let error {
-                        self.logger.debug("⚠️ [Relay:\(shortID)] Vsock->TCP send error: \(error)")
+                        self.logger.warning("⚠️ [Relay:\(shortID)] Vsock->TCP TCP send error: \(error)")
+                        self.close(reason: "vsock-to-tcp-send-error:\(error)")
                         source.cancel()
                     } else {
                         source.resume()
@@ -237,12 +321,16 @@ final class ConnectionRelay: @unchecked Sendable {
             }
 
             source.setCancelHandler {
+                self.logger.debug("📥 [Relay:\(shortID)] Vsock->TCP DispatchSource cancelled (vsockFd:\(fd))")
                 readBuffer.deallocate()
                 continuation.resume()
             }
 
             source.activate()
+            self.logger.debug("📥 [Relay:\(shortID)] Vsock->TCP DispatchSource activated (vsockFd:\(fd))")
         }
+
+        logger.debug("📥 [Relay:\(shortID)] Vsock->TCP relay finished")
     }
 
     // MARK: - TCP Operations
