@@ -141,6 +141,11 @@ actor PodFactory {
         }
         
         logger.info("✅ [PodFactory] Pod created: \(podID)")
+
+        // Record pod and its bootlog in the run manifest for crash-time cleanup
+        await RunManifest.shared.record(podID: podID, logger: logger)
+        await RunManifest.shared.record(bootlogPath: bootlogPath.path, logger: logger)
+
         return pod
     }
     

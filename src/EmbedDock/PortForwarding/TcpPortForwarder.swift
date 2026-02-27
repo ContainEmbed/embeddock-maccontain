@@ -142,9 +142,15 @@ public class TcpPortForwarder: ObservableObject {
             // Poll for host socket instead of hardcoded sleep
             try await pollForHostSocket(timeout: .seconds(5))
 
+            // Record host socket in manifest so a crash leaves a traceable artefact
+            await RunManifest.shared.record(socketPath: hostSocketPath, logger: logger)
+
             // Step 3: Create NWListener on host
             logger.info("📡 [TcpPortForwarder] Step 3: Creating TCP listener on port \(hostPort)")
             try await startListener()
+
+            // Record bound port in manifest
+            await RunManifest.shared.record(port: Int(hostPort), logger: logger)
 
             status = .active(connections: 0)
             logger.info("✅ [TcpPortForwarder] Port forwarding active: localhost:\(hostPort) -> container:\(containerPort)")
