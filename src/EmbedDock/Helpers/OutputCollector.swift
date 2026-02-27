@@ -31,51 +31,51 @@ import Logging
 /// try await pod.execInContainer("main", ..., stdout: collector)
 /// let output = collector.getString()
 /// ```
-public final class OutputCollector: Writer, @unchecked Sendable {
+final class OutputCollector: Writer, @unchecked Sendable {
     private let lock = NSLock()
     private var buffer = Data()
-    
-    public init() {}
-    
+
+    init() {}
+
     /// Appends data to the internal buffer.
-    public func write(_ data: Data) throws {
+    func write(_ data: Data) throws {
         lock.withLock {
             buffer.append(data)
         }
     }
-    
+
     /// No-op close implementation.
-    public func close() throws {
+    func close() throws {
         // No-op - buffer is kept for retrieval
     }
-    
+
     /// Returns the collected output as raw Data.
-    public func getOutput() -> Data {
+    func getOutput() -> Data {
         lock.withLock {
             return buffer
         }
     }
-    
+
     /// Returns the collected output as a UTF-8 string.
-    public func getString() -> String {
+    func getString() -> String {
         let data = getOutput()
         return String(data: data, encoding: .utf8) ?? ""
     }
-    
+
     /// Returns the collected output as a trimmed UTF-8 string.
-    public func getTrimmedString() -> String {
+    func getTrimmedString() -> String {
         getString().trimmingCharacters(in: .whitespacesAndNewlines)
     }
-    
+
     /// Clears the internal buffer.
-    public func clear() {
+    func clear() {
         lock.withLock {
             buffer.removeAll()
         }
     }
-    
+
     /// Returns the current size of the buffer in bytes.
-    public var count: Int {
+    var count: Int {
         lock.withLock {
             buffer.count
         }
@@ -89,18 +89,18 @@ public final class OutputCollector: Writer, @unchecked Sendable {
 /// Useful for capturing the main container process stdout/stderr
 /// so that application logs (e.g. Node.js startup errors) are
 /// visible in the host-side log stream.
-public final class LoggingWriter: Writer, @unchecked Sendable {
+final class LoggingWriter: Writer, @unchecked Sendable {
     private let lock = NSLock()
     private let logger: Logging.Logger
     private let label: String
     private var lineBuffer = Data()
 
-    public init(logger: Logging.Logger, label: String) {
+    init(logger: Logging.Logger, label: String) {
         self.logger = logger
         self.label = label
     }
 
-    public func write(_ data: Data) throws {
+    func write(_ data: Data) throws {
         lock.withLock {
             lineBuffer.append(data)
             // Flush complete lines
@@ -114,7 +114,7 @@ public final class LoggingWriter: Writer, @unchecked Sendable {
         }
     }
 
-    public func close() throws {
+    func close() throws {
         // Flush any remaining partial line
         lock.withLock {
             if !lineBuffer.isEmpty, let line = String(data: lineBuffer, encoding: .utf8), !line.isEmpty {

@@ -25,13 +25,13 @@ import System
 ///
 /// Unix sockets provide high-performance local communication, commonly used
 /// for Docker-style APIs and other local services.
-public actor UnixSocketCommunicator: ContainerCommunicator {
+actor UnixSocketCommunicator: ContainerCommunicator {
     private let pod: LinuxPod
     private let socketPath: FilePath
     private let logger: Logger
     private var isRunning = false
-    
-    public init(
+
+    init(
         pod: LinuxPod,
         socketPath: FilePath,
         logger: Logger
@@ -40,24 +40,24 @@ public actor UnixSocketCommunicator: ContainerCommunicator {
         self.socketPath = socketPath
         self.logger = logger
     }
-    
-    public func start() async throws {
+
+    func start() async throws {
         logger.info("🔗 [UnixSocketCommunicator] Starting communication on socket: \(socketPath)")
         isRunning = true
     }
-    
-    public func stop() async throws {
+
+    func stop() async throws {
         logger.info("🔗 [UnixSocketCommunicator] Stopping communication")
         isRunning = false
     }
-    
-    public func send(_ message: Data) async throws -> Data {
+
+    func send(_ message: Data) async throws -> Data {
         guard isRunning else {
             throw CommunicationError.notConnected
         }
-        
+
         logger.debug("📤 [UnixSocketCommunicator] Sending \(message.count) bytes to \(socketPath)")
-        
+
         // Use socat or curl to communicate via unix socket
         let result = try await exec(
             command: [
@@ -70,16 +70,16 @@ public actor UnixSocketCommunicator: ContainerCommunicator {
             ],
             workingDirectory: nil
         )
-        
+
         if result.exitCode != 0 {
             throw CommunicationError.unexpectedResponse(result.stderrString)
         }
-        
+
         return result.stdout
     }
-    
+
     /// Make an HTTP request through a Unix socket.
-    public func httpRequest(
+    func httpRequest(
         method: String,
         path: String,
         body: Data? = nil,
@@ -92,26 +92,26 @@ public actor UnixSocketCommunicator: ContainerCommunicator {
             "-w", "\n---STATUS:%{http_code}---",
             "-X", method
         ]
-        
+
         for (key, value) in headers {
             curlArgs.append("-H")
             curlArgs.append("\(key): \(value)")
         }
-        
+
         if let body = body, !body.isEmpty {
             curlArgs.append("-d")
             curlArgs.append(String(decoding: body, as: UTF8.self))
         }
-        
+
         curlArgs.append("http://localhost\(path)")
-        
+
         let result = try await exec(command: curlArgs, workingDirectory: nil)
-        
+
         // Parse the response
         let outputString = result.stdoutString
         var statusCode = 0
         var responseBody = outputString
-        
+
         if let statusRange = outputString.range(of: "---STATUS:") {
             let statusStart = statusRange.upperBound
             if let statusEnd = outputString.range(of: "---", range: statusStart..<outputString.endIndex) {
@@ -120,18 +120,18 @@ public actor UnixSocketCommunicator: ContainerCommunicator {
                 responseBody = String(outputString[..<statusRange.lowerBound])
             }
         }
-        
+
         return HTTPResponse(
             statusCode: statusCode,
             body: Data(responseBody.utf8),
             headers: [:]
         )
     }
-    
-    public func exec(command: [String], workingDirectory: String?) async throws -> ExecResult {
+
+    func exec(command: [String], workingDirectory: String?) async throws -> ExecResult {
         let stdoutCollector = OutputCollector()
         let stderrCollector = OutputCollector()
-        
+
         let process = try await pod.execInContainer(
             "main",
             processID: "unix-\(UUID().uuidString.prefix(8))",
@@ -142,10 +142,10 @@ public actor UnixSocketCommunicator: ContainerCommunicator {
                 config.stderr = stderrCollector
             }
         )
-        
+
         try await process.start()
         let exitStatus = try await process.wait(timeoutInSeconds: 30)
-        
+
         return ExecResult(
             exitCode: exitStatus.exitCode,
             stdout: stdoutCollector.getOutput(),

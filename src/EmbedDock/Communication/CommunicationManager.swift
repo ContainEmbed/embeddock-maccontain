@@ -26,7 +26,7 @@ public enum CommunicationType: String, Codable, CaseIterable, Sendable {
     case vsock      = "Vsock"
     case http       = "HTTP"
     case unixSocket = "Unix Socket"
-    
+
     public var description: String {
         switch self {
         case .vsock:
@@ -53,28 +53,28 @@ public enum CommunicationType: String, Codable, CaseIterable, Sendable {
 /// try await manager.addChannel(.http, port: 8080)
 /// let response = try await manager.http.get(path: "/health")
 /// ```
-public actor CommunicationManager {
+actor CommunicationManager {
     private var channels: [CommunicationType: any ContainerCommunicator] = [:]
     private let pod: LinuxPod
     private let logger: Logger
-    
-    public init(pod: LinuxPod, logger: Logger) {
+
+    init(pod: LinuxPod, logger: Logger) {
         self.pod = pod
         self.logger = logger
     }
-    
+
     // MARK: - Channel Management
-    
+
     /// Add a vsock communication channel.
-    public func addVsockChannel(port: UInt32) async throws {
+    func addVsockChannel(port: UInt32) async throws {
         let communicator = VsockCommunicator(pod: pod, port: port, logger: logger)
         try await communicator.start()
         channels[.vsock] = communicator
         logger.info("✅ Added vsock channel on port \(port)")
     }
-    
+
     /// Add an HTTP communication channel.
-    public func addHTTPChannel(containerIP: String = "192.168.127.2", port: Int) async throws {
+    func addHTTPChannel(containerIP: String = "192.168.127.2", port: Int) async throws {
         let communicator = HTTPContainerCommunicator(
             pod: pod,
             containerIP: containerIP,
@@ -85,9 +85,9 @@ public actor CommunicationManager {
         channels[.http] = communicator
         logger.info("✅ Added HTTP channel to \(containerIP):\(port)")
     }
-    
+
     /// Add a Unix socket communication channel.
-    public func addUnixSocketChannel(socketPath: FilePath) async throws {
+    func addUnixSocketChannel(socketPath: FilePath) async throws {
         let communicator = UnixSocketCommunicator(
             pod: pod,
             socketPath: socketPath,
@@ -97,9 +97,9 @@ public actor CommunicationManager {
         channels[.unixSocket] = communicator
         logger.info("✅ Added Unix socket channel at \(socketPath)")
     }
-    
+
     /// Remove a communication channel.
-    public func removeChannel(_ type: CommunicationType) async throws {
+    func removeChannel(_ type: CommunicationType) async throws {
         guard let channel = channels[type] else {
             return
         }
@@ -107,99 +107,99 @@ public actor CommunicationManager {
         channels[type] = nil
         logger.info("🗑️ Removed \(type.rawValue) channel")
     }
-    
+
     /// Remove all communication channels.
-    public func removeAllChannels() async throws {
+    func removeAllChannels() async throws {
         for (type, channel) in channels {
             try await channel.stop()
             logger.info("🗑️ Stopped \(type.rawValue) channel")
         }
         channels.removeAll()
     }
-    
+
     // MARK: - Channel Access
-    
+
     /// Get a channel by type.
-    public func channel(_ type: CommunicationType) -> (any ContainerCommunicator)? {
+    func channel(_ type: CommunicationType) -> (any ContainerCommunicator)? {
         channels[type]
     }
-    
+
     /// Get the HTTP communicator for convenience.
-    public var http: HTTPContainerCommunicator? {
+    var http: HTTPContainerCommunicator? {
         channels[.http] as? HTTPContainerCommunicator
     }
-    
+
     /// Get the vsock communicator for convenience.
-    public var vsock: VsockCommunicator? {
+    var vsock: VsockCommunicator? {
         channels[.vsock] as? VsockCommunicator
     }
-    
+
     /// Get the Unix socket communicator for convenience.
-    public var unixSocket: UnixSocketCommunicator? {
+    var unixSocket: UnixSocketCommunicator? {
         channels[.unixSocket] as? UnixSocketCommunicator
     }
-    
+
     /// Check if a channel type is available.
-    public func hasChannel(_ type: CommunicationType) -> Bool {
+    func hasChannel(_ type: CommunicationType) -> Bool {
         channels[type] != nil
     }
-    
+
     /// Get all active channel types.
-    public var activeChannelTypes: [CommunicationType] {
+    var activeChannelTypes: [CommunicationType] {
         Array(channels.keys)
     }
-    
+
     // MARK: - Convenience Methods
-    
+
     /// Execute a command in the container using the best available channel.
-    public func exec(command: [String], workingDirectory: String? = nil) async throws -> ExecResult {
+    func exec(command: [String], workingDirectory: String? = nil) async throws -> ExecResult {
         // Prefer vsock for exec operations, then fallback to others
         let preferredOrder: [CommunicationType] = [.vsock, .unixSocket, .http]
-        
+
         for type in preferredOrder {
             if let channel = channels[type] {
                 return try await channel.exec(command: command, workingDirectory: workingDirectory)
             }
         }
-        
+
         throw CommunicationError.noAvailableChannel
     }
-    
+
     /// Send raw data using the best available channel.
-    public func send(_ data: Data) async throws -> Data {
+    func send(_ data: Data) async throws -> Data {
         let preferredOrder: [CommunicationType] = [.vsock, .unixSocket, .http]
-        
+
         for type in preferredOrder {
             if let channel = channels[type] {
                 return try await channel.send(data)
             }
         }
-        
+
         throw CommunicationError.noAvailableChannel
     }
-    
+
     // MARK: - ContainerEngine Compatibility
-    
+
     /// Setup HTTP communication channel (compatibility method for ContainerEngine).
     /// - Parameter port: The container port to connect to.
     /// - Returns: The configured HTTPContainerCommunicator.
-    public func setupHTTPCommunication(port: Int) async throws -> HTTPContainerCommunicator {
+    func setupHTTPCommunication(port: Int) async throws -> HTTPContainerCommunicator {
         try await addHTTPChannel(port: port)
         guard let httpComm = http else {
             throw CommunicationError.setupFailed("Failed to create HTTP channel")
         }
         return httpComm
     }
-    
+
     /// Disconnect all communication channels.
-    public func disconnect() async {
+    func disconnect() async {
         do {
             try await removeAllChannels()
         } catch {
             logger.warning("⚠️ Error during disconnect: \(error)")
         }
     }
-    
+
     /// Make an HTTP request (convenience method for ContainerEngine).
     /// - Parameters:
     ///   - method: HTTP method (GET, POST, etc.)
@@ -207,7 +207,7 @@ public actor CommunicationManager {
     ///   - body: Optional request body.
     ///   - headers: Optional headers.
     /// - Returns: HTTPResponse with status, body, and headers.
-    public func httpRequest(
+    func httpRequest(
         method: String,
         path: String,
         body: Data? = nil,
@@ -224,5 +224,5 @@ public actor CommunicationManager {
 
 extension CommunicationError {
     /// Error when no communication channel is available.
-    public static let noAvailableChannel = CommunicationError.setupFailed("No communication channel available")
+    static let noAvailableChannel = CommunicationError.setupFailed("No communication channel available")
 }
