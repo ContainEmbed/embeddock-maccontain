@@ -82,6 +82,13 @@ public class TcpPortForwarder: ObservableObject {
     private var guestBridge: GuestBridge?
     private var connectionTasks: [UUID: Task<Void, Never>] = [:]
 
+    /// Background task that periodically warms the vsock connection when idle.
+    ///
+    /// Without this keepalive, the first request after ~1-2 minutes of idle
+    /// triggers a cold-start in VZVirtioSocketDevice.connect(toPort:) which
+    /// can take long enough for clients to time out before data flows.
+    private var keepaliveTask: Task<Void, Never>?
+
     // MARK: - Initialization
 
     /// Create a new TCP port forwarder.
@@ -152,6 +159,9 @@ public class TcpPortForwarder: ObservableObject {
             // Record bound port in manifest
             await RunManifest.shared.record(port: Int(hostPort), logger: logger)
 
+            // Step 4: Start vsock keepalive to prevent cold-start timeouts after idle.
+            startVsockKeepalive()
+
             status = .active(connections: 0)
             logger.info("✅ [TcpPortForwarder] Port forwarding active: localhost:\(hostPort) -> container:\(containerPort)")
 
@@ -178,7 +188,10 @@ public class TcpPortForwarder: ObservableObject {
     // MARK: - Cleanup
     
     private func cleanup() async {
-        // Phase 1: Cancel all connection tasks (immediate, non-blocking)
+        // Phase 1: Cancel keepalive and all connection tasks (immediate, non-blocking)
+        keepaliveTask?.cancel()
+        keepaliveTask = nil
+
         for (_, task) in connectionTasks {
             task.cancel()
         }
@@ -310,7 +323,8 @@ public class TcpPortForwarder: ObservableObject {
     
     private func handleNewConnection(_ incomingConnection: NWConnection) async {
         let connectionID = UUID()
-        logger.info("📥 [TcpPortForwarder] New connection: \(connectionID)")
+        let activeCount = activeConnections.count
+        logger.info("📥 [TcpPortForwarder] New connection: \(connectionID) (active: \(activeCount), hostSocket exists: \(FileManager.default.fileExists(atPath: hostSocketPath)))")
 
         // Start the incoming connection
         incomingConnection.start(queue: .global(qos: .userInitiated))
@@ -326,15 +340,17 @@ public class TcpPortForwarder: ObservableObject {
 
     private func relayConnectionViaUnixSocket(connectionID: UUID, incoming: NWConnection) async {
         var socketHandle: FileHandle? = nil
+        let relayStart = ContinuousClock.now
 
         defer {
+            let elapsed = ContinuousClock.now - relayStart
             incoming.cancel()
             try? socketHandle?.close()
             Task { @MainActor in
                 self.activeConnections.removeValue(forKey: connectionID)
                 self.connectionTasks.removeValue(forKey: connectionID)
                 self.updateConnectionCount()
-                self.logger.info("🔌 [TcpPortForwarder] Connection closed: \(connectionID)")
+                self.logger.info("🔌 [TcpPortForwarder] Connection closed: \(connectionID) (lifetime: \(elapsed))")
             }
         }
 
@@ -343,22 +359,29 @@ public class TcpPortForwarder: ObservableObject {
             try await waitForConnectionReady(incoming)
             logger.debug("✅ [TcpPortForwarder] Incoming connection ready: \(connectionID)")
         } catch {
-            logger.warning("⚠️ [TcpPortForwarder] Incoming connection failed: \(error)")
+            logger.warning("⚠️ [TcpPortForwarder] Incoming connection failed to become ready: \(connectionID) — \(error)")
             return
         }
 
+        // Verify host socket file exists before attempting POSIX connect
+        let socketExists = FileManager.default.fileExists(atPath: hostSocketPath)
+        logger.info("🔗 [TcpPortForwarder] Connecting to host Unix socket: \(hostSocketPath) (exists:\(socketExists)) for connection: \(connectionID)")
+
+        if !socketExists {
+            logger.error("❌ [TcpPortForwarder] Host Unix socket file is MISSING at \(hostSocketPath) — the framework relay may have died. Connection \(connectionID) will fail.")
+        }
+
         // Connect to the host-side Unix socket (framework relay endpoint)
-        logger.debug("🔗 [TcpPortForwarder] Connecting to host Unix socket: \(hostSocketPath)")
         do {
             socketHandle = try connectToUnixSocket(path: hostSocketPath)
-            logger.debug("✅ [TcpPortForwarder] Unix socket connection established")
+            logger.info("✅ [TcpPortForwarder] Unix socket connected (fd:\(socketHandle!.fileDescriptor)) for connection: \(connectionID)")
         } catch {
-            logger.warning("⚠️ [TcpPortForwarder] Failed to connect to Unix socket \(hostSocketPath): \(error)")
+            logger.warning("⚠️ [TcpPortForwarder] Failed to connect to Unix socket \(hostSocketPath) for \(connectionID): \(error) (hostSocket exists:\(FileManager.default.fileExists(atPath: hostSocketPath)))")
             return
         }
 
         guard let unixSocket = socketHandle else {
-            logger.warning("⚠️ [TcpPortForwarder] Unix socket handle is nil")
+            logger.warning("⚠️ [TcpPortForwarder] Unix socket handle is nil for \(connectionID)")
             return
         }
 
@@ -375,7 +398,7 @@ public class TcpPortForwarder: ObservableObject {
             updateConnectionCount()
         }
 
-        logger.info("🔗 [TcpPortForwarder] Relay established for \(connectionID)")
+        logger.info("🔗 [TcpPortForwarder] Relay established for \(connectionID) (unixSocketFd:\(unixSocket.fileDescriptor))")
 
         // Start bidirectional relay
         await relay.startRelay()
@@ -431,6 +454,49 @@ public class TcpPortForwarder: ObservableObject {
         )
     }
 
+    // MARK: - Vsock Keepalive
+
+    /// Start a background timer that periodically warms the vsock connection when idle.
+    ///
+    /// After ~1-2 minutes of inactivity, `VZVirtioSocketDevice.connect(toPort:)` undergoes
+    /// a cold-start that can take long enough for clients to time out before data flows.
+    /// This timer connects to the host Unix socket every 45 seconds (well under the
+    /// cold-start threshold) when no real connections are active, triggering a `vm.dial()`
+    /// inside the framework's `SocketRelay` and keeping vsock warm.
+    ///
+    /// The keepalive connection is opened and immediately closed — no data is transferred.
+    private func startVsockKeepalive() {
+        keepaliveTask = Task { @MainActor [weak self] in
+            let interval: Duration = .seconds(45)
+            while !Task.isCancelled {
+                try? await Task.sleep(for: interval)
+                guard !Task.isCancelled, let self else { break }
+
+                // Only warm when idle — skip if real connections are active.
+                guard self.activeConnections.isEmpty else {
+                    self.logger.debug("🔄 [TcpPortForwarder] Keepalive: skipped (active: \(self.activeConnections.count) connections)")
+                    continue
+                }
+
+                guard FileManager.default.fileExists(atPath: self.hostSocketPath) else {
+                    self.logger.warning("⚠️ [TcpPortForwarder] Keepalive: host socket missing at \(self.hostSocketPath), skipping warm-up")
+                    continue
+                }
+
+                // Connect and immediately close to trigger vm.dial() in SocketRelay.
+                self.logger.debug("🔄 [TcpPortForwarder] Keepalive: warming vsock via \(self.hostSocketPath)")
+                do {
+                    let fd = try self.connectToUnixSocket(path: self.hostSocketPath)
+                    try? fd.close()
+                    self.logger.info("🔄 [TcpPortForwarder] Keepalive: vsock warmed successfully")
+                } catch {
+                    self.logger.warning("⚠️ [TcpPortForwarder] Keepalive: warm-up attempt failed (non-fatal): \(error)")
+                }
+            }
+            self?.logger.debug("🔄 [TcpPortForwarder] Keepalive: timer stopped")
+        }
+    }
+
     // MARK: - Unix Socket Connection
 
     /// Connect to a Unix domain socket at the given path and return a FileHandle.
@@ -440,9 +506,10 @@ public class TcpPortForwarder: ObservableObject {
     private nonisolated func connectToUnixSocket(path: String) throws -> FileHandle {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else {
+            let errNo = errno
             throw ContainerizationError(
                 .internalError,
-                message: "Failed to create Unix socket: errno \(errno)"
+                message: "Failed to create Unix socket: \(posixErrnoName(errNo))"
             )
         }
 
@@ -479,10 +546,25 @@ public class TcpPortForwarder: ObservableObject {
             close(fd)
             throw ContainerizationError(
                 .internalError,
-                message: "Failed to connect to Unix socket at \(path): errno \(errNo)"
+                message: "Failed to connect to Unix socket at \(path): \(posixErrnoName(errNo))"
             )
         }
 
         return FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+    }
+
+    /// Return a readable POSIX name for an errno value.
+    private nonisolated func posixErrnoName(_ code: Int32) -> String {
+        switch code {
+        case ENOENT:       return "ENOENT(2) — no such file or directory (socket file missing)"
+        case ECONNREFUSED: return "ECONNREFUSED(61) — connection refused (nothing listening)"
+        case EPIPE:        return "EPIPE(32)"
+        case EBADF:        return "EBADF(9)"
+        case EACCES:       return "EACCES(13) — permission denied"
+        case EADDRINUSE:   return "EADDRINUSE(48)"
+        case ETIMEDOUT:    return "ETIMEDOUT(60)"
+        case ENOTSOCK:     return "ENOTSOCK(38)"
+        default:           return "errno(\(code))"
+        }
     }
 }

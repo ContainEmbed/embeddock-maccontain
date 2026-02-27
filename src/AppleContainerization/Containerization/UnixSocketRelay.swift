@@ -173,20 +173,70 @@ extension SocketRelay {
                     try? FileManager.default.removeItem(at: hostConn)
                 }
                 do {
+                    var acceptCount = 0
                     for try await connection in connectionStream {
-                        do {
-                            try await self.handleHostUnixConn(
-                                hostConn: connection,
-                                port: self.port,
-                                vm: self.vm,
-                                log: self.log
-                            )
-                        } catch {
-                            // Per-connection error: log and continue accepting.
-                            // Do NOT rethrow — the accept loop must survive
-                            // individual connection failures (e.g. vsock dial
-                            // errors, guest overload, transient network issues).
-                            log?.warning("relay connection handling failed, continuing accept loop: \(error)")
+                        acceptCount += 1
+                        let connIndex = acceptCount
+                        log?.info(
+                            "accept loop: accepted connection, spawning handler",
+                            metadata: [
+                                "connIndex": "\(connIndex)",
+                                "vport": "\(self.port)",
+                            ])
+
+                        // FIX: Spawn handleHostUnixConn as a concurrent Task so the
+                        // accept loop is NEVER blocked by vm.dial() or relay setup.
+                        //
+                        // Root cause of idle-then-slow-first-request:
+                        //   Previously `await handleHostUnixConn(...)` serialised the
+                        //   loop. After ~1-2 min idle, VZVirtioSocketDevice.connect()
+                        //   is slow to warm up. The loop was blocked during that dial,
+                        //   so subsequent connections piled up in the kernel backlog
+                        //   and the first client timed out waiting for a response.
+                        //   Spawning here makes the accept loop immediately ready for
+                        //   the next connection regardless of vsock dial latency.
+                        Task {
+                            let dialStart = ContinuousClock.now
+                            log?.info(
+                                "accept loop: starting vsock dial",
+                                metadata: [
+                                    "connIndex": "\(connIndex)",
+                                    "vport": "\(self.port)",
+                                ])
+                            do {
+                                try await self.handleHostUnixConn(
+                                    hostConn: connection,
+                                    port: self.port,
+                                    vm: self.vm,
+                                    log: self.log
+                                )
+                                let elapsed = ContinuousClock.now - dialStart
+                                log?.info(
+                                    "accept loop: handler completed",
+                                    metadata: [
+                                        "connIndex": "\(connIndex)",
+                                        "elapsed": "\(elapsed)",
+                                        "vport": "\(self.port)",
+                                    ])
+                            } catch {
+                                let elapsed = ContinuousClock.now - dialStart
+                                // Per-connection error: log and continue.
+                                // Do NOT rethrow — the accept loop must survive
+                                // individual connection failures (e.g. vsock dial
+                                // errors, guest overload, transient network issues).
+                                log?.warning(
+                                    "relay connection handling failed",
+                                    metadata: [
+                                        "connIndex": "\(connIndex)",
+                                        "elapsed": "\(elapsed)",
+                                        "error": "\(error)",
+                                        "vport": "\(self.port)",
+                                    ])
+                                // Safety net: ensure the accepted host Socket fd is
+                                // closed even if handleHostUnixConn missed it.
+                                // Socket.close() is idempotent if already closed.
+                                try? connection.close()
+                            }
                         }
                     }
                 } catch {
@@ -237,21 +287,105 @@ extension SocketRelay {
         vm: any VirtualMachineInstance,
         log: Logger?
     ) async throws {
-        do {
-            let guestConn = try await vm.dial(port)
+        // Retry vm.dial() to handle transient VZ framework cold-start failures
+        // after idle. Similar to waitForAgent() which retries during boot, but
+        // with a smaller budget since the VM is already running.
+        let maxDialAttempts = 3
+        let retryDelay: Duration = .milliseconds(250)
+
+        var guestConn: FileHandle?
+        var lastDialError: Error?
+
+        for attempt in 1...maxDialAttempts {
+            let dialStart = ContinuousClock.now
             log?.info(
-                "initiating connection from host to guest",
+                "vsock dial starting",
                 metadata: [
                     "vport": "\(port)",
-                    "hostFd": "\(guestConn.fileDescriptor)",
-                    "guestFd": "\(hostConn.fileDescriptor)",
+                    "hostFd": "\(hostConn.fileDescriptor)",
+                    "attempt": "\(attempt)/\(maxDialAttempts)",
                 ])
+
+            do {
+                guestConn = try await vm.dial(port)
+                lastDialError = nil
+
+                let dialElapsed = ContinuousClock.now - dialStart
+                log?.info(
+                    "vsock dial completed",
+                    metadata: [
+                        "vport": "\(port)",
+                        "guestFd": "\(guestConn!.fileDescriptor)",
+                        "hostFd": "\(hostConn.fileDescriptor)",
+                        "dialDuration": "\(dialElapsed)",
+                        "attempt": "\(attempt)/\(maxDialAttempts)",
+                    ])
+
+                if dialElapsed > .milliseconds(500) {
+                    log?.warning(
+                        "SLOW vsock dial detected",
+                        metadata: [
+                            "dialDuration": "\(dialElapsed)",
+                            "vport": "\(port)",
+                            "attempt": "\(attempt)/\(maxDialAttempts)",
+                        ])
+                }
+                break
+            } catch {
+                let dialElapsed = ContinuousClock.now - dialStart
+                lastDialError = error
+                log?.warning(
+                    "vsock dial failed",
+                    metadata: [
+                        "vport": "\(port)",
+                        "hostFd": "\(hostConn.fileDescriptor)",
+                        "attempt": "\(attempt)/\(maxDialAttempts)",
+                        "dialDuration": "\(dialElapsed)",
+                        "error": "\(error)",
+                    ])
+                if attempt < maxDialAttempts {
+                    try? await Task.sleep(for: retryDelay)
+                }
+            }
+        }
+
+        guard let guestConn else {
+            log?.error(
+                "all vsock dial attempts exhausted, closing host connection to unblock peer",
+                metadata: [
+                    "vport": "\(port)",
+                    "hostFd": "\(hostConn.fileDescriptor)",
+                    "attempts": "\(maxDialAttempts)",
+                ])
+            // FIX: Close hostConn to prevent fd leak and send EOF to the
+            // ConnectionRelay on the other end of the Unix socket. Without this
+            // close, the accepted Socket (closeOnDeinit=false) stays open but
+            // orphaned — nobody reads from it, nobody writes to it, nobody
+            // closes it — so the TCP client hangs until the 300s idle timeout.
+            try? hostConn.close()
+            throw lastDialError!
+        }
+
+        let guestFd = guestConn.fileDescriptor
+
+        // NOTE: relay() returns IMMEDIATELY — it activates DispatchSources and
+        // exits. After this, the DispatchSource cancel handlers own both fds.
+        do {
             try await self.relay(
                 hostConn: hostConn,
-                guestFd: guestConn.fileDescriptor
+                guestFd: guestFd
             )
         } catch {
-            log?.error("failed to relay between vsock \(port) and \(hostConn)")
+            log?.error(
+                "relay setup failed, closing both fds",
+                metadata: [
+                    "vport": "\(port)",
+                    "hostFd": "\(hostConn.fileDescriptor)",
+                    "guestFd": "\(guestFd)",
+                    "error": "\(error)",
+                ])
+            try? hostConn.close()
+            close(guestFd)
             throw error
         }
     }
