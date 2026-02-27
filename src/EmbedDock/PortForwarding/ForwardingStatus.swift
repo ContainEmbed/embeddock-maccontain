@@ -22,7 +22,7 @@ import Foundation
 ///
 /// Represents the current state of a port forwarding operation,
 /// including active connection counts.
-public enum ForwardingStatus: Equatable, Sendable {
+enum ForwardingStatus: Equatable, Sendable {
     /// Port forwarding is not active.
     case inactive
 
@@ -39,13 +39,13 @@ public enum ForwardingStatus: Equatable, Sendable {
     case error(String)
 
     /// Whether port forwarding is currently active.
-    public var isActive: Bool {
+    var isActive: Bool {
         if case .active = self { return true }
         return false
     }
 
     /// A human-readable description of the status.
-    public var description: String {
+    var description: String {
         switch self {
         case .inactive:
             return "Inactive"

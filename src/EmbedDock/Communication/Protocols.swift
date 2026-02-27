@@ -22,7 +22,7 @@ import Foundation
 ///
 /// Implementations of this protocol provide different communication mechanisms
 /// to interact with running containers (vsock, HTTP, Unix socket, etc.)
-public protocol ContainerCommunicator: Sendable {
+protocol ContainerCommunicator: Sendable {
     /// Send a message to the container and receive a response.
     /// - Parameter message: The data to send
     /// - Returns: The response data from the container

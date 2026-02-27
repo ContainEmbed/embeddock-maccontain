@@ -19,7 +19,7 @@ import Foundation
 // MARK: - Communication Errors
 
 /// Errors that can occur during container communication.
-public enum CommunicationError: Error, LocalizedError {
+enum CommunicationError: Error, LocalizedError {
     /// The communication channel is not connected.
     case notConnected
     
@@ -41,7 +41,7 @@ public enum CommunicationError: Error, LocalizedError {
     /// Unexpected response from container.
     case unexpectedResponse(String)
     
-    public var errorDescription: String? {
+    var errorDescription: String? {
         switch self {
         case .notConnected:
             return "Communication channel is not connected"

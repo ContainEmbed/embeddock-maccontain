@@ -351,20 +351,21 @@ final class DefaultContainerEngine: ContainerEngine {
 
     // MARK: - ContainerImageManaging
 
-    func pullImage(reference: String, platform: Platform? = nil) async throws -> ContainerImage {
+    func pullImage(reference: String, platform: ContainerPlatform? = nil) async throws -> ContainerImageRef {
         guard let service = imageService else {
             throw ContainerizationError(.notFound, message: "Image service not initialized")
         }
-        return try await service.pullImage(reference: reference, platform: platform) { [weak self] msg in
+        let image = try await service.pullImage(reference: reference, platform: platform?.toPlatform()) { [weak self] msg in
             Task { @MainActor in self?.reportProgress(msg) }
         }
+        return ContainerImageRef(image)
     }
 
-    func prepareRootfs(from image: ContainerImage, platform: Platform) async throws -> URL {
+    func prepareRootfs(from image: ContainerImageRef, platform: ContainerPlatform) async throws -> URL {
         guard let service = imageService else {
             throw ContainerizationError(.notFound, message: "Image service not initialized")
         }
-        return try await service.prepareRootfs(from: image, platform: platform) { [weak self] msg in
+        return try await service.prepareRootfs(from: image.image, platform: platform.toPlatform()) { [weak self] msg in
             Task { @MainActor in self?.reportProgress(msg) }
         }
     }

@@ -124,7 +124,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         print("👋 [AppDelegate] Container cleanup requested before quit — deferring termination")
         handler {
             print("✅ [AppDelegate] Cleanup complete — replying to system")
-            NSApp.reply(toApplicationShouldTerminate: true)
+            DispatchQueue.main.async { NSApp.reply(toApplicationShouldTerminate: true) }
         }
         return .terminateLater
     }

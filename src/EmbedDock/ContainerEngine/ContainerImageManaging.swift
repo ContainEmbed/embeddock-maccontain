@@ -5,13 +5,6 @@
 //===----------------------------------------------------------------------===//
 
 import Foundation
-import Containerization
-import ContainerizationOCI
-
-// MARK: - Shared Type Aliases
-
-/// An OCI container image from the Containerization framework.
-public typealias ContainerImage = Containerization.Image
 
 // MARK: - Container Image Managing
 
@@ -20,8 +13,8 @@ public typealias ContainerImage = Containerization.Image
 public protocol ContainerImageManaging {
 
     /// Pull a container image by reference (e.g. `node:20-alpine`).
-    func pullImage(reference: String, platform: Platform?) async throws -> ContainerImage
+    func pullImage(reference: String, platform: ContainerPlatform?) async throws -> ContainerImageRef
 
     /// Unpack an image into an EXT4 root filesystem ready for a VM.
-    func prepareRootfs(from image: ContainerImage, platform: Platform) async throws -> URL
+    func prepareRootfs(from image: ContainerImageRef, platform: ContainerPlatform) async throws -> URL
 }
