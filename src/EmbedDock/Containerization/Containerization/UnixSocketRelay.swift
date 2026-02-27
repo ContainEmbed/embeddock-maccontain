@@ -480,12 +480,11 @@ extension SocketRelay {
                 ])
 
             // only close underlying fds when both sources are at EOF
-            // ensure that one of the cancel handlers will see both sources cancelled
+            // guard on pairID presence so cleanup runs exactly once
             self.state.withLock { state in
-                if vsockConnectionSource.isCancelled {
+                if vsockConnectionSource.isCancelled, state.relaySources[pairID] != nil {
                     try? hostConn.close()
                     close(guestFd)
-                    // FM #12: Free page-sized buffers and remove relay sources entry
                     buf1.deallocate()
                     buf2.deallocate()
                     state.relaySources.removeValue(forKey: pairID)
@@ -502,9 +501,9 @@ extension SocketRelay {
                 ])
 
             // only close underlying fds when both sources are at EOF
-            // ensure that one of the cancel handlers will see both sources cancelled
+            // guard on pairID presence so cleanup runs exactly once
             self.state.withLock { state in
-                if connSource.isCancelled {
+                if connSource.isCancelled, state.relaySources[pairID] != nil {
                     self.log?.info(
                         "close file descriptors",
                         metadata: [
@@ -513,7 +512,6 @@ extension SocketRelay {
                         ])
                     try? hostConn.close()
                     close(guestFd)
-                    // FM #12: Free page-sized buffers and remove relay sources entry
                     buf1.deallocate()
                     buf2.deallocate()
                     state.relaySources.removeValue(forKey: pairID)

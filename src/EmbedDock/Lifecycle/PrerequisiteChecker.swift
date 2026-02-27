@@ -119,14 +119,10 @@ public struct PrerequisiteChecker: Sendable {
     /// 1. Application bundle resources
     /// 2. Source tree Resources directory (for development)
     public func getResourcePath(_ name: String) -> URL? {
-        // Try to find in Bundle's Resources
-        if let resourcePath = Bundle.main.resourcePath {
-            let url = URL(fileURLWithPath: resourcePath).appendingPathComponent(name)
-            logger.debug("🔍 [PrerequisiteChecker] Checking bundle resources: \(url.path)")
-            if FileManager.default.fileExists(atPath: url.path) {
-                logger.info("✅ [PrerequisiteChecker] Found in bundle: \(url.path)")
-                return url
-            }
+        // Try to find in SPM-generated resource bundle (EmbedDock's Bundle.module)
+        if let url = Bundle.module.url(forResource: name, withExtension: nil, subdirectory: "Resources") {
+            logger.info("✅ [PrerequisiteChecker] Found in module bundle: \(url.path)")
+            return url
         }
         
         // Try in source tree Resources directory for development
