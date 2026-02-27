@@ -40,6 +40,20 @@ struct HelloWorldApp: App {
                 .environmentObject(viewModel)
                 .onAppear {
                     print("🚀 [App] HelloWorldApp launched")
+
+                    // Wire termination cleanup so AppDelegate can stop the container
+                    // before the process exits — covers Cmd+Q, SIGTERM, and SIGINT.
+                    appDelegate.cleanupHandler = { [weak viewModel] completion in
+                        guard let vm = viewModel, vm.status.canStop else {
+                            completion()
+                            return
+                        }
+                        Task { @MainActor in
+                            try? await vm.stopContainer()
+                            completion()
+                        }
+                    }
+
                     // Handle pending file opened before app was ready
                     handlePendingFile()
                 }

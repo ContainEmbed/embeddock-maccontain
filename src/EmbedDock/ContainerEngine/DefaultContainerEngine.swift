@@ -150,6 +150,17 @@ final class DefaultContainerEngine: ContainerEngine {
             logger: logger
         )
 
+        // Initialise the run manifest with the current PID so a crash leaves a
+        // traceable artefact on disk.
+        await RunManifest.shared.initialize(logger: logger)
+
+        // Clean up any resources left over from a previous crashed or force-killed run.
+        let cleaner = StaleResourceCleaner(logger: logger)
+        let report = await cleaner.cleanIfNeeded()
+        if report.foundStaleManifest {
+            logger.info("🧹 [Engine] Startup stale-resource cleanup: \(report)")
+        }
+
         reportProgress("Ready")
         logger.info("✅ [Engine] Initialization complete")
     }
@@ -219,6 +230,9 @@ final class DefaultContainerEngine: ContainerEngine {
         }
 
         forceClearState()
+
+        // Remove the run manifest — clean shutdown means no resources are dangling.
+        await RunManifest.shared.clear(logger: logger)
     }
 
     // MARK: - ContainerExecutor
@@ -371,6 +385,30 @@ final class DefaultContainerEngine: ContainerEngine {
             return
         }
         diagnosticsHelper?.printReport(report)
+    }
+
+    // MARK: - Termination Cleanup
+
+    /// Perform best-effort cleanup when the app is about to terminate.
+    ///
+    /// Designed to be called from `AppDelegate.applicationShouldTerminate(_:)`.
+    /// Starts an async Task that stops any running container and clears the run
+    /// manifest, then calls `completion` so AppDelegate can reply to the system.
+    ///
+    /// macOS allows up to ~30 seconds before force-killing the process; we stay
+    /// well inside that window via the CleanupCoordinator timeouts (≤30 s).
+    func performTerminationCleanup(completion: @escaping @Sendable () -> Void) {
+        Task { @MainActor [weak self] in
+            guard let self else { completion(); return }
+            if self.isRunning {
+                self.logger.info("👋 [Engine] Termination cleanup — stopping running container")
+                try? await self.stop()
+            } else {
+                // Even if not running, ensure manifest is cleared
+                await RunManifest.shared.clear(logger: self.logger)
+            }
+            completion()
+        }
     }
 
     // MARK: - Private State Helpers
