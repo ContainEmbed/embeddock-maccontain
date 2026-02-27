@@ -39,6 +39,20 @@ let package = Package(
         .library(name: "ContainerizationOS", targets: ["ContainerizationOS"]),
         .library(name: "ContainerizationExtras", targets: ["ContainerizationExtras"]),
         .library(name: "ContainerizationArchive", targets: ["ContainerizationArchive"]),
+        .library(
+            name: "AppleContainerization",
+            targets: [
+                "Containerization",
+                "ContainerizationError",
+                "ContainerizationEXT4",
+                "ContainerizationOCI",
+                "ContainerizationNetlink",
+                "ContainerizationIO",
+                "ContainerizationOS",
+                "ContainerizationExtras",
+                "ContainerizationArchive",
+            ]
+        ),
         .executable(name: "cctl", targets: ["cctl"]),
     ],
     dependencies: [
@@ -67,7 +81,7 @@ let package = Package(
                 "ContainerizationOS",
                 "ContainerizationIO",
             ],
-            path: "Sources/HelloWorldApp",
+            path: "src/HelloWorldApp",
             swiftSettings: [
                 .unsafeFlags(["-parse-as-library"])
             ]
@@ -85,13 +99,14 @@ let package = Package(
                 "ContainerizationOS",
                 "ContainerizationIO",
             ],
-            path: "Sources/EmbedDock",
+            path: "src/EmbedDock",
             resources: [
                 .copy("Resources")
             ]
         ),
         .target(
-            name: "ContainerizationError"
+            name: "ContainerizationError",
+            path: "src/AppleContainerization/ContainerizationError"
         ),
         .target(
             name: "Containerization",
@@ -106,6 +121,7 @@ let package = Package(
                 "ContainerizationExtras",
                 .target(name: "ContainerizationEXT4", condition: .when(platforms: [.macOS])),
             ],
+            path: "src/AppleContainerization/Containerization",
             exclude: [
                 "SandboxContext/SandboxContext.proto"
             ]
@@ -117,7 +133,8 @@ let package = Package(
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 "Containerization",
                 "ContainerizationOS",
-            ]
+            ],
+            path: "src/AppleContainerization/cctl"
         ),
         .executableTarget(
             name: "containerization-integration",
@@ -126,7 +143,7 @@ let package = Package(
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 "Containerization",
             ],
-            path: "Sources/Integration"
+            path: "src/AppleContainerization/Integration"
         ),
         .target(
             name: "ContainerizationEXT4",
@@ -135,7 +152,7 @@ let package = Package(
                 .product(name: "SystemPackage", package: "swift-system"),
                 "ContainerizationOS",
             ],
-            path: "Sources/ContainerizationEXT4"
+            path: "src/AppleContainerization/ContainerizationEXT4"
         ),
         .target(
             name: "ContainerizationArchive",
@@ -144,6 +161,7 @@ let package = Package(
                 .product(name: "SystemPackage", package: "swift-system"),
                 "ContainerizationExtras",
             ],
+            path: "src/AppleContainerization/ContainerizationArchive",
             exclude: [
                 "CArchive"
             ]
@@ -151,7 +169,7 @@ let package = Package(
         .target(
             name: "CArchive",
             dependencies: [],
-            path: "Sources/ContainerizationArchive/CArchive",
+            path: "src/AppleContainerization/ContainerizationArchive/CArchive",
             cSettings: [
                 .define(
                     "PLATFORM_CONFIG_H", to: "\"config_darwin.h\"",
@@ -177,7 +195,8 @@ let package = Package(
                 "ContainerizationError",
                 "ContainerizationOS",
                 "ContainerizationExtras",
-            ]
+            ],
+            path: "src/AppleContainerization/ContainerizationOCI"
         ),
         .target(
             name: "ContainerizationNetlink",
@@ -185,7 +204,8 @@ let package = Package(
                 .product(name: "Logging", package: "swift-log"),
                 "ContainerizationOS",
                 "ContainerizationExtras",
-            ]
+            ],
+            path: "src/AppleContainerization/ContainerizationNetlink"
         ),
         .target(
             name: "ContainerizationOS",
@@ -193,7 +213,8 @@ let package = Package(
                 .product(name: "Logging", package: "swift-log"),
                 "CShim",
                 "ContainerizationError",
-            ]
+            ],
+            path: "src/AppleContainerization/ContainerizationOS"
         ),
         .target(
             name: "ContainerizationIO",
@@ -202,7 +223,8 @@ let package = Package(
                 .product(name: "NIO", package: "swift-nio"),
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOFoundationCompat", package: "swift-nio"),
-            ]
+            ],
+            path: "src/AppleContainerization/ContainerizationIO"
         ),
         .target(
             name: "ContainerizationExtras",
@@ -210,10 +232,12 @@ let package = Package(
                 "ContainerizationError",
                 .product(name: "Collections", package: "swift-collections"),
                 .product(name: "Logging", package: "swift-log"),
-            ]
+            ],
+            path: "src/AppleContainerization/ContainerizationExtras"
         ),
         .target(
-            name: "CShim"
+            name: "CShim",
+            path: "src/AppleContainerization/CShim"
         ),
     ]
 )

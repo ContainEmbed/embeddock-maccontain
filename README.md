@@ -472,7 +472,7 @@ embeddock-maccontain/
 │   ├── cctl                               # Pre-built CLI
 │   └── containerization-integration       # Integration helper
 │
-└── Sources/
+└── src/
     ├── HelloWorldApp/                     # ── Main Application ──
     │   ├── ContainerManager.swift         # Pure model — business logic, delegate callbacks
     │   ├── AppDelegate.swift              # macOS app delegate, CLI auto-start
@@ -540,18 +540,21 @@ embeddock-maccontain/
     │       ├── vminitd                    # Linux ARM64 — VM init (PID 1)
     │       └── vmexec                     # Linux ARM64 — exec helper
     │
-    ├── Containerization/                  # Core container library (Apple)
-    ├── ContainerizationOCI/               # OCI image spec handling
-    ├── ContainerizationEXT4/              # EXT4 filesystem creation
-    ├── ContainerizationArchive/           # Archive extraction
-    ├── ContainerizationIO/                # I/O utilities
-    ├── ContainerizationOS/                # OS abstractions
-    ├── ContainerizationNetlink/           # Netlink for networking
-    ├── ContainerizationExtras/            # Utility extensions
-    ├── ContainerizationError/             # Error types
-    ├── CShim/                             # C shims for syscalls
-    ├── cctl/                              # CLI tool
-    └── Integration/                       # Integration utilities
+    ├── EmbedDock/                         # ── EmbedDock Library ──
+    │
+    └── AppleContainerization/             # ── Apple Containerization Libraries ──
+        ├── Containerization/              # Core container library (Apple)
+        ├── ContainerizationOCI/           # OCI image spec handling
+        ├── ContainerizationEXT4/          # EXT4 filesystem creation
+        ├── ContainerizationArchive/       # Archive extraction
+        ├── ContainerizationIO/            # I/O utilities
+        ├── ContainerizationOS/            # OS abstractions
+        ├── ContainerizationNetlink/       # Netlink for networking
+        ├── ContainerizationExtras/        # Utility extensions
+        ├── ContainerizationError/         # Error types
+        ├── CShim/                         # C shims for syscalls
+        ├── cctl/                          # CLI tool
+        └── Integration/                   # Integration utilities
 ```
 
 ---

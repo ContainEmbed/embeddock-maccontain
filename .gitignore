@@ -1,28 +1,41 @@
+# macOS
 .DS_Store
-bin
-libexec
-.build
-.local
-xcuserdata/
+
+# Xcode / Swift
+.build/
 DerivedData/
+xcuserdata/
 .swiftpm/
-.netrc
-.swiftpm
-workdir/
-installer/
-.venv/
-test_results/
-*.pid
-*.log
-*.zip
+
+# Local binaries and build output
+bin/
+libexec/
 *.o
 *.ext4
 *.pkg
-*.swp
-*.tar.gz
-*.tar.xz
 vmlinux
 
-# API docs for local preview only.
+# Archives (build/distribution artifacts)
+*.zip
+*.tar.gz
+*.tar.xz
+
+# Editor / IDE
+*.swp
+
+# Runtime / logs
+*.pid
+*.log
+
+# Python
+.venv/
+
+# Credentials
+.netrc
+
+# Local config
+.local
+
+# Docs preview
 _site/
 _serve/
