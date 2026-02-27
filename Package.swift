@@ -73,13 +73,6 @@ let package = Package(
             dependencies: [
                 .product(name: "Logging", package: "swift-log"),
                 "EmbedDock",
-                "Containerization",
-                "ContainerizationOCI",
-                "ContainerizationArchive",
-                "ContainerizationEXT4",
-                "ContainerizationExtras",
-                "ContainerizationOS",
-                "ContainerizationIO",
             ],
             path: "src/HelloWorldApp",
             swiftSettings: [

@@ -17,8 +17,6 @@
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
-import ContainerizationOCI
-import Containerization
 import EmbedDock
 
 // MARK: - Container View Model
@@ -236,11 +234,11 @@ final class ContainerViewModel: ObservableObject {
 
     // MARK: - Image Operations
 
-    func pullNodeImage(reference: String, platform: Platform? = nil) async throws -> ContainerImage {
+    func pullNodeImage(reference: String, platform: ContainerPlatform? = nil) async throws -> ContainerImageRef {
         try await engine.pullImage(reference: reference, platform: platform)
     }
 
-    func prepareRootfs(from image: ContainerImage, platform: Platform) async throws -> URL {
+    func prepareRootfs(from image: ContainerImageRef, platform: ContainerPlatform) async throws -> URL {
         try await engine.prepareRootfs(from: image, platform: platform)
     }
 

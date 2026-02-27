@@ -58,7 +58,7 @@ import Network
 /// await forwarder.stop()
 /// ```
 @MainActor
-public class TcpPortForwarder: ObservableObject {
+class TcpPortForwarder: ObservableObject {
     // MARK: - Configuration
 
     private let hostPort: UInt16
@@ -76,7 +76,7 @@ public class TcpPortForwarder: ObservableObject {
 
     // MARK: - State
 
-    @Published private(set) public var status: ForwardingStatus = .inactive
+    @Published private(set) var status: ForwardingStatus = .inactive
     private var listener: NWListener?
     private var activeConnections: [UUID: ConnectionRelay] = [:]
     private var guestBridge: GuestBridge?
