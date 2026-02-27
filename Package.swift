@@ -93,13 +93,16 @@ let package = Package(
                 "ContainerizationIO",
             ],
             path: "src/EmbedDock",
+            exclude: [
+                "Containerization"
+            ],
             resources: [
                 .copy("Resources")
             ]
         ),
         .target(
             name: "ContainerizationError",
-            path: "src/AppleContainerization/ContainerizationError"
+            path: "src/EmbedDock/Containerization/ContainerizationError"
         ),
         .target(
             name: "Containerization",
@@ -114,7 +117,7 @@ let package = Package(
                 "ContainerizationExtras",
                 .target(name: "ContainerizationEXT4", condition: .when(platforms: [.macOS])),
             ],
-            path: "src/AppleContainerization/Containerization",
+            path: "src/EmbedDock/Containerization/Containerization",
             exclude: [
                 "SandboxContext/SandboxContext.proto"
             ]
@@ -127,7 +130,7 @@ let package = Package(
                 "Containerization",
                 "ContainerizationOS",
             ],
-            path: "src/AppleContainerization/cctl"
+            path: "src/EmbedDock/Containerization/cctl"
         ),
         .executableTarget(
             name: "containerization-integration",
@@ -136,7 +139,7 @@ let package = Package(
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 "Containerization",
             ],
-            path: "src/AppleContainerization/Integration"
+            path: "src/EmbedDock/Containerization/Integration"
         ),
         .target(
             name: "ContainerizationEXT4",
@@ -145,7 +148,7 @@ let package = Package(
                 .product(name: "SystemPackage", package: "swift-system"),
                 "ContainerizationOS",
             ],
-            path: "src/AppleContainerization/ContainerizationEXT4"
+            path: "src/EmbedDock/Containerization/ContainerizationEXT4"
         ),
         .target(
             name: "ContainerizationArchive",
@@ -154,7 +157,7 @@ let package = Package(
                 .product(name: "SystemPackage", package: "swift-system"),
                 "ContainerizationExtras",
             ],
-            path: "src/AppleContainerization/ContainerizationArchive",
+            path: "src/EmbedDock/Containerization/ContainerizationArchive",
             exclude: [
                 "CArchive"
             ]
@@ -162,7 +165,7 @@ let package = Package(
         .target(
             name: "CArchive",
             dependencies: [],
-            path: "src/AppleContainerization/ContainerizationArchive/CArchive",
+            path: "src/EmbedDock/Containerization/ContainerizationArchive/CArchive",
             cSettings: [
                 .define(
                     "PLATFORM_CONFIG_H", to: "\"config_darwin.h\"",
@@ -189,7 +192,7 @@ let package = Package(
                 "ContainerizationOS",
                 "ContainerizationExtras",
             ],
-            path: "src/AppleContainerization/ContainerizationOCI"
+            path: "src/EmbedDock/Containerization/ContainerizationOCI"
         ),
         .target(
             name: "ContainerizationNetlink",
@@ -198,7 +201,7 @@ let package = Package(
                 "ContainerizationOS",
                 "ContainerizationExtras",
             ],
-            path: "src/AppleContainerization/ContainerizationNetlink"
+            path: "src/EmbedDock/Containerization/ContainerizationNetlink"
         ),
         .target(
             name: "ContainerizationOS",
@@ -207,7 +210,7 @@ let package = Package(
                 "CShim",
                 "ContainerizationError",
             ],
-            path: "src/AppleContainerization/ContainerizationOS"
+            path: "src/EmbedDock/Containerization/ContainerizationOS"
         ),
         .target(
             name: "ContainerizationIO",
@@ -217,7 +220,7 @@ let package = Package(
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOFoundationCompat", package: "swift-nio"),
             ],
-            path: "src/AppleContainerization/ContainerizationIO"
+            path: "src/EmbedDock/Containerization/ContainerizationIO"
         ),
         .target(
             name: "ContainerizationExtras",
@@ -226,11 +229,11 @@ let package = Package(
                 .product(name: "Collections", package: "swift-collections"),
                 .product(name: "Logging", package: "swift-log"),
             ],
-            path: "src/AppleContainerization/ContainerizationExtras"
+            path: "src/EmbedDock/Containerization/ContainerizationExtras"
         ),
         .target(
             name: "CShim",
-            path: "src/AppleContainerization/CShim"
+            path: "src/EmbedDock/Containerization/CShim"
         ),
     ]
 )
