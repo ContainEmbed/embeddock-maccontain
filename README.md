@@ -468,10 +468,6 @@ embeddock-maccontain/
 ├── sample-express-server.tar              # Sample OCI image for testing
 ├── signing/
 │   └── vz.entitlements                    # Virtualization entitlement
-├── bin/
-│   ├── cctl                               # Pre-built CLI
-│   └── containerization-integration       # Integration helper
-│
 └── src/
     ├── HelloWorldApp/                     # ── Main Application ──
     │   ├── ContainerManager.swift         # Pure model — business logic, delegate callbacks
@@ -553,7 +549,6 @@ embeddock-maccontain/
         ├── ContainerizationExtras/        # Utility extensions
         ├── ContainerizationError/         # Error types
         ├── CShim/                         # C shims for syscalls
-        ├── cctl/                          # CLI tool
         └── Integration/                   # Integration utilities
 ```
 

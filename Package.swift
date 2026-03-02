@@ -53,11 +53,9 @@ let package = Package(
                 "ContainerizationArchive",
             ]
         ),
-        .executable(name: "cctl", targets: ["cctl"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-log.git", from: "1.0.0"),
-        .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.3.0"),
         .package(url: "https://github.com/apple/swift-collections.git", from: "1.1.4"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.0.0"),
         .package(url: "https://github.com/grpc/grpc-swift.git", from: "1.26.0"),
@@ -121,25 +119,6 @@ let package = Package(
             exclude: [
                 "SandboxContext/SandboxContext.proto"
             ]
-        ),
-        .executableTarget(
-            name: "cctl",
-            dependencies: [
-                .product(name: "Logging", package: "swift-log"),
-                .product(name: "ArgumentParser", package: "swift-argument-parser"),
-                "Containerization",
-                "ContainerizationOS",
-            ],
-            path: "src/EmbedDock/Containerization/cctl"
-        ),
-        .executableTarget(
-            name: "containerization-integration",
-            dependencies: [
-                .product(name: "Logging", package: "swift-log"),
-                .product(name: "ArgumentParser", package: "swift-argument-parser"),
-                "Containerization",
-            ],
-            path: "src/EmbedDock/Containerization/Integration"
         ),
         .target(
             name: "ContainerizationEXT4",
