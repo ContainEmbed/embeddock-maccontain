@@ -34,7 +34,6 @@ let package = Package(
         .library(name: "Containerization", targets: ["Containerization", "ContainerizationError"]),
         .library(name: "ContainerizationEXT4", targets: ["ContainerizationEXT4"]),
         .library(name: "ContainerizationOCI", targets: ["ContainerizationOCI"]),
-        .library(name: "ContainerizationNetlink", targets: ["ContainerizationNetlink"]),
         .library(name: "ContainerizationIO", targets: ["ContainerizationIO"]),
         .library(name: "ContainerizationOS", targets: ["ContainerizationOS"]),
         .library(name: "ContainerizationExtras", targets: ["ContainerizationExtras"]),
@@ -46,7 +45,6 @@ let package = Package(
                 "ContainerizationError",
                 "ContainerizationEXT4",
                 "ContainerizationOCI",
-                "ContainerizationNetlink",
                 "ContainerizationIO",
                 "ContainerizationOS",
                 "ContainerizationExtras",
@@ -173,15 +171,7 @@ let package = Package(
             ],
             path: "src/EmbedDock/Containerization/ContainerizationOCI"
         ),
-        .target(
-            name: "ContainerizationNetlink",
-            dependencies: [
-                .product(name: "Logging", package: "swift-log"),
-                "ContainerizationOS",
-                "ContainerizationExtras",
-            ],
-            path: "src/EmbedDock/Containerization/ContainerizationNetlink"
-        ),
+
         .target(
             name: "ContainerizationOS",
             dependencies: [

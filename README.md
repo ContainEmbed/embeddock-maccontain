@@ -545,7 +545,6 @@ embeddock-maccontain/
         ├── ContainerizationArchive/       # Archive extraction
         ├── ContainerizationIO/            # I/O utilities
         ├── ContainerizationOS/            # OS abstractions
-        ├── ContainerizationNetlink/       # Netlink for networking
         ├── ContainerizationExtras/        # Utility extensions
         ├── ContainerizationError/         # Error types
         ├── CShim/                         # C shims for syscalls
