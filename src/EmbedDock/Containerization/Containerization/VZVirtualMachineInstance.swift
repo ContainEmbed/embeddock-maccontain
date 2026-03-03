@@ -434,7 +434,7 @@ extension Kernel {
     func linuxCommandline(initialFilesystem: Mount) -> String {
         var args = self.commandLine.kernelArgs
 
-        args.append("init=/sbin/vminitd")
+        args.append("init=/init")
         // rootfs is always set as ro.
         args.append("ro")
 

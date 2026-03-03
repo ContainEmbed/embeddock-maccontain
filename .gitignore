@@ -8,12 +8,9 @@ xcuserdata/
 .swiftpm/
 
 # Local binaries and build output
-bin/
-libexec/
 *.o
 *.ext4
 *.pkg
-vmlinux
 
 # Archives (build/distribution artifacts)
 *.zip
@@ -27,15 +24,8 @@ vmlinux
 *.pid
 *.log
 
-# Python
-.venv/
-
 # Credentials
 .netrc
 
 # Local config
 .local
-
-# Docs preview
-_site/
-_serve/

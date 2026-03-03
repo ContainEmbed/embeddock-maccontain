@@ -86,7 +86,7 @@ final class StartupCoordinator {
         
         // Step 4: Prepare init filesystem (delegates to PodFactory)
         updateProgress("Step 4/10: Preparing init filesystem...")
-        let initfs = try await podFactory.prepareInitFilesystem(imageStore: imageStore)
+        let initfs = try await podFactory.prepareInitFilesystem()
         
         // Step 5-7: Load kernel, create VM manager, create pod (delegates to PodFactory)
         updateProgress("Step 5/10: Loading Linux kernel...")

@@ -16,11 +16,11 @@
 
 import Foundation
 import Containerization
-import ContainerizationOCI
 import ContainerizationEXT4
 import ContainerizationError
 import Logging
 import NIO
+import SystemPackage
 
 // MARK: - Pod Configuration
 
@@ -157,12 +157,15 @@ actor PodFactory {
     func addContainer(to pod: LinuxPod, config: ContainerConfiguration) async throws {
         logger.info("➕ [PodFactory] Adding container '\(config.containerID)' to pod")
 
+        // Resolve bare command names to absolute paths using the container rootfs
+        let resolvedCommand = resolveCommand(config.command, environment: config.environment, rootfs: config.rootfs)
+
         let stdoutWriter = LoggingWriter(logger: logger, label: "container:stdout")
         let stderrWriter = LoggingWriter(logger: logger, label: "container:stderr")
 
         try await pod.addContainer(config.containerID, rootfs: config.rootfs) { containerConfig in
             containerConfig.hostname = config.hostname
-            containerConfig.process.arguments = config.command
+            containerConfig.process.arguments = resolvedCommand
             containerConfig.process.workingDirectory = config.workingDirectory
             containerConfig.process.environmentVariables = config.environment
             containerConfig.process.stdout = stdoutWriter
@@ -173,40 +176,32 @@ actor PodFactory {
                 containerConfig.mounts.append(mount)
             }
         }
-        
+
         logger.info("✅ [PodFactory] Container '\(config.containerID)' added")
     }
     
     // MARK: - Init Filesystem
-    
-    /// Prepare the init filesystem, using cached version or creating new.
+
+    /// Prepare the init filesystem, using cached version or generating from bundled binaries.
     ///
-    /// - Parameter imageStore: The image store for loading init images.
     /// - Returns: The init filesystem mount.
-    func prepareInitFilesystem(imageStore: ImageStore) async throws -> Containerization.Mount {
+    func prepareInitFilesystem() async throws -> Containerization.Mount {
         let initBlockURL = workDir.appendingPathComponent("init.block")
         logger.debug("📍 [PodFactory] Init block path: \(initBlockURL.path)")
-        
+
         if FileManager.default.fileExists(atPath: initBlockURL.path) {
             logger.info("✅ [PodFactory] Using existing init.block")
             return .block(format: "ext4", source: initBlockURL.path, destination: "/", options: ["ro"])
         }
-        
-        logger.info("🔍 [PodFactory] Creating init.block from vminit:latest")
-        let initReference = "vminit:latest"
-        
-        do {
-            let initImage = try await imageStore.getInitImage(reference: initReference)
-            let initfs = try await initImage.initBlock(at: initBlockURL, for: SystemPlatform.linuxArm)
-            logger.info("✅ [PodFactory] init.block created successfully")
-            return initfs
-        } catch {
-            logger.error("❌ [PodFactory] Failed to get init image: \(error.localizedDescription)")
-            throw ContainerizationError(
-                .notFound, 
-                message: "Init image 'vminit:latest' not found. Please create it first using: make init"
-            )
-        }
+
+        logger.info("🔨 [PodFactory] Generating init.block from bundled binaries")
+        let generator = InitBlockGenerator(
+            prerequisiteChecker: prerequisiteChecker,
+            logger: logger
+        )
+        try generator.generateInitBlock(at: initBlockURL)
+
+        return .block(format: "ext4", source: initBlockURL.path, destination: "/", options: ["ro"])
     }
     
     // MARK: - Rootfs Creation
@@ -249,5 +244,57 @@ actor PodFactory {
     private func createBootlogPath(podID: String) -> URL {
         URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("bootlog-\(podID).txt")
+    }
+
+    // MARK: - Executable PATH Resolution
+
+    /// Resolve bare command names (e.g. "node", "docker-entrypoint.sh") to absolute paths
+    /// by searching the container rootfs EXT4 image.
+    ///
+    /// The guest's `exec_command` uses `execve()` which requires absolute paths.
+    /// This method emulates `execvp()` behavior on the host side by inspecting the
+    /// container rootfs before sending the process spec to the guest via gRPC.
+    ///
+    /// - Parameters:
+    ///   - command: The command array (args[0] is the executable).
+    ///   - environment: Environment variables (searched for PATH=...).
+    ///   - rootfs: The rootfs mount whose source is the EXT4 image path.
+    /// - Returns: The command array with args[0] resolved to an absolute path if found.
+    private func resolveCommand(_ command: [String], environment: [String], rootfs: Containerization.Mount) -> [String] {
+        guard var args = Optional(command), !args.isEmpty else { return command }
+
+        let executable = args[0]
+
+        // Already an absolute path — nothing to resolve
+        if executable.hasPrefix("/") {
+            return command
+        }
+
+        // Extract PATH from environment, fall back to standard default
+        let pathDirs = environment
+            .first { $0.hasPrefix("PATH=") }
+            .map { String($0.dropFirst(5)).split(separator: ":").map(String.init) }
+            ?? ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"]
+
+        // Open the rootfs EXT4 image and search for the executable
+        let rootfsPath = rootfs.source
+        do {
+            let reader = try EXT4.EXT4Reader(blockDevice: FilePath(rootfsPath))
+
+            for dir in pathDirs {
+                let candidatePath = FilePath(dir + "/" + executable)
+                if reader.exists(candidatePath) {
+                    let resolved = dir + "/" + executable
+                    logger.info("🔍 [PodFactory] Resolved '\(executable)' → '\(resolved)' (found in rootfs)")
+                    args[0] = resolved
+                    return args
+                }
+            }
+            logger.warning("⚠️ [PodFactory] Could not resolve '\(executable)' in rootfs PATH — passing as-is")
+        } catch {
+            logger.warning("⚠️ [PodFactory] Could not inspect rootfs for PATH resolution: \(error.localizedDescription) — passing command as-is")
+        }
+
+        return command
     }
 }
