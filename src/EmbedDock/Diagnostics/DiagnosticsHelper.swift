@@ -290,13 +290,34 @@ final class DiagnosticsHelper: @unchecked Sendable {
         let healthProbeResult = await performHealthProbe(pod: pod, containerID: "main")
         logger.error("🔍 [Diagnostics] Health probe: \(healthProbeResult ? "✅ Responsive" : "❌ Not responding")")
         
-        // Use readLogFile() instead of inline file reading
-        let bootlogPath = workDir.appendingPathComponent("bootlog.txt").path
-        logger.error("🔍 [Diagnostics] Boot log may be at: \(bootlogPath)")
-        
-        let bootlogTail = readLogFile(name: "bootlog.txt", lastLines: 20)
+        // Try to read boot log — check the pod's configured bootlog path first
+        // (typically /tmp/bootlog-{podID}.txt), then fall back to workDir/bootlog.txt
+        var bootlogPath: String = workDir.appendingPathComponent("bootlog.txt").path
+        var bootlogTail: String?
+
+        if let podBootlog = pod.config.bootlog {
+            bootlogPath = podBootlog.path
+            logger.error("🔍 [Diagnostics] Boot log path (from pod config): \(bootlogPath)")
+            do {
+                let content = try String(contentsOf: podBootlog, encoding: .utf8)
+                let lines = content.components(separatedBy: .newlines)
+                bootlogTail = lines.suffix(20).joined(separator: "\n")
+            } catch {
+                logger.error("🔍 [Diagnostics] Could not read boot log at \(bootlogPath): \(error.localizedDescription)")
+            }
+        }
+
+        // Fall back to workDir/bootlog.txt if pod config didn't have one or read failed
+        if bootlogTail == nil {
+            let fallbackPath = workDir.appendingPathComponent("bootlog.txt").path
+            logger.error("🔍 [Diagnostics] Trying fallback boot log at: \(fallbackPath)")
+            bootlogTail = readLogFile(name: "bootlog.txt", lastLines: 20)
+        }
+
         if let tail = bootlogTail {
             logger.error("🔍 [Diagnostics] Boot log (last 20 lines):\n\(tail)")
+        } else {
+            logger.error("🔍 [Diagnostics] No boot log content found")
         }
         
         logger.error("🔍 [Diagnostics] ========== END DIAGNOSTIC REPORT ==========")

@@ -126,20 +126,32 @@ extension VZVirtualMachineInstance: VirtualMachineInstance {
             }
 
             // Do any necessary setup needed prior to starting the guest.
+            self.logger?.info("[VM] Prestart setup...")
             try await self.prestart()
 
+            self.logger?.info("[VM] Starting virtual machine (VZVirtualMachine.start)...")
+            let vmStartTime = Date()
             try await self.vm.start(queue: self.queue)
+            let vmStartElapsed = Date().timeIntervalSince(vmStartTime)
+            self.logger?.info("[VM] VM started in \(String(format: "%.2f", vmStartElapsed))s, waiting for vminitd agent...")
+
+            let agentStartTime = Date()
+            let connection = try await self.vm.waitForAgent(queue: self.queue)
+            let agentElapsed = Date().timeIntervalSince(agentStartTime)
+            self.logger?.info("[VM] vminitd agent connected in \(String(format: "%.2f", agentElapsed))s")
 
             let agent = Vminitd(
-                connection: try await self.vm.waitForAgent(queue: self.queue),
+                connection: connection,
                 group: self.group
             )
 
             do {
                 if self.config.rosetta {
+                    self.logger?.info("[VM] Enabling Rosetta...")
                     try await agent.enableRosetta()
                 }
             } catch {
+                self.logger?.error("[VM] Rosetta enablement failed: \(error)")
                 try await agent.close()
                 throw error
             }
@@ -147,6 +159,7 @@ extension VZVirtualMachineInstance: VirtualMachineInstance {
             // Don't close our remote context as we are providing
             // it to our time sync routine.
             await self.timeSyncer.start(context: agent)
+            self.logger?.info("[VM] Time syncer started, VM fully operational")
         }
     }
 
@@ -434,7 +447,10 @@ extension Kernel {
     func linuxCommandline(initialFilesystem: Mount) -> String {
         var args = self.commandLine.kernelArgs
 
-        args.append("init=/sbin/vminitd")
+        // Use /init (the pre-init shim) which mounts /proc before execing
+        // /sbin/vminitd.  The Swift runtime in vminitd reads /proc/self/exe
+        // during startup, so procfs must be mounted before it runs.
+        args.append("init=/init")
         // rootfs is always set as ro.
         args.append("ro")
 

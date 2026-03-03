@@ -155,52 +155,90 @@ final class StartupCoordinator {
         let timeoutSeconds: Double = 90.0
         let startTime = Date()
         var timedOut = false
-        
+
         let timeoutTask = Task {
             try await Task.sleep(nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
             timedOut = true
         }
-        
+
         defer { timeoutTask.cancel() }
-        
-        // Create pod
+
+        // Phase A: Create pod (VM boot + vminitd + standardSetup + rootfs mount + network)
+        logger.info("[Step10] Phase A: pod.create() starting...")
+        let createStart = Date()
         do {
             try await pod.create()
+            let createElapsed = Date().timeIntervalSince(createStart)
+            logger.info("[Step10] Phase A: pod.create() completed in \(String(format: "%.2f", createElapsed))s")
             if timedOut {
                 throw ContainerizationError(.timeout, message: "Pod creation timed out")
             }
         } catch {
+            let createElapsed = Date().timeIntervalSince(createStart)
+            logger.error("[Step10] Phase A: pod.create() FAILED after \(String(format: "%.2f", createElapsed))s — \(error)")
+            dumpBootLog(pod: pod)
             if timedOut {
                 throw ContainerizationError(.timeout, message: "Step 10 timed out after \(timeoutSeconds) seconds")
             }
             await diagnosticsHelper.printDiagnostics(pod: pod, phase: "pod.create()", error: error)
             throw error
         }
-        
-        // Start container
+
+        // Phase B: Start the container process
+        logger.info("[Step10] Phase B: pod.startContainer(\"main\") starting...")
+        let startContainerStart = Date()
         do {
             try await pod.startContainer("main")
+            let startElapsed = Date().timeIntervalSince(startContainerStart)
+            logger.info("[Step10] Phase B: pod.startContainer(\"main\") completed in \(String(format: "%.2f", startElapsed))s")
             if timedOut {
                 throw ContainerizationError(.timeout, message: "Container start timed out")
             }
         } catch {
+            let startElapsed = Date().timeIntervalSince(startContainerStart)
+            logger.error("[Step10] Phase B: pod.startContainer(\"main\") FAILED after \(String(format: "%.2f", startElapsed))s — \(error)")
+            dumpBootLog(pod: pod)
             if timedOut {
                 throw ContainerizationError(.timeout, message: "Step 10 timed out after \(timeoutSeconds) seconds")
             }
             await diagnosticsHelper.printDiagnostics(pod: pod, phase: "startContainer()", error: error)
             throw error
         }
-        
-        // Check for immediate crash
+
+        // Phase C: Immediate crash detection
+        logger.info("[Step10] Phase C: checking for immediate crash...")
         let crashCheck = await diagnosticsHelper.checkForImmediateCrash(pod: pod, containerID: "main")
         if crashCheck.crashed {
             let exitInfo = crashCheck.exitStatus.map { diagnosticsHelper.formatExitStatus($0) } ?? "Unknown"
+            logger.error("[Step10] Phase C: Container crashed immediately — \(exitInfo)")
+            dumpBootLog(pod: pod)
             await diagnosticsHelper.printDiagnostics(pod: pod, phase: "crash detection", error: nil)
             throw ContainerizationError(.internalError, message: "Container crashed: \(exitInfo)")
         }
-        
+
         let elapsed = Date().timeIntervalSince(startTime)
         logger.info("⏱️ [StartupCoordinator] Started in \(String(format: "%.1f", elapsed))s")
+    }
+
+    /// Read the boot log file and dump its contents to the logger for debugging.
+    private func dumpBootLog(pod: LinuxPod) {
+        guard let bootlogURL = pod.config.bootlog else {
+            logger.warning("[Step10] No boot log path configured — cannot dump kernel output")
+            return
+        }
+        logger.info("[Step10] --- BEGIN BOOT LOG (\(bootlogURL.path)) ---")
+        do {
+            let content = try String(contentsOf: bootlogURL, encoding: .utf8)
+            let lines = content.components(separatedBy: .newlines)
+            // Log last 40 lines (or all if shorter)
+            let tail = lines.suffix(40)
+            for line in tail {
+                logger.info("[bootlog] \(line)")
+            }
+        } catch {
+            logger.warning("[Step10] Could not read boot log: \(error.localizedDescription)")
+        }
+        logger.info("[Step10] --- END BOOT LOG ---")
     }
     
     private func updateProgress(_ message: String) {

@@ -300,6 +300,7 @@ extension LinuxPod {
                 mountsByID[id] = [container.rootfs] + container.config.mounts
             }
 
+            self.logger?.info("[Pod] Creating VM configuration...")
             let vmConfig = VMConfiguration(
                 cpus: self.config.cpus,
                 memoryInBytes: self.config.memoryInBytes,
@@ -311,26 +312,37 @@ extension LinuxPod {
             let creationConfig = StandardVMConfig(configuration: vmConfig)
             let vm = try await self.vmm.create(config: creationConfig)
             let relayManager = UnixSocketRelayManager(vm: vm)
+
+            self.logger?.info("[Pod] Starting VM (this includes kernel boot + vminitd handshake)...")
+            let vmStartTime = Date()
             try await vm.start()
+            let vmElapsed = Date().timeIntervalSince(vmStartTime)
+            self.logger?.info("[Pod] VM started in \(String(format: "%.2f", vmElapsed))s")
 
             do {
                 let containers = state.containers
                 try await vm.withAgent { agent in
+                    self.logger?.info("[Pod] Running standardSetup (lo, sysfs, tmpfs, devpts, cgroup2)...")
+                    let setupStart = Date()
                     try await agent.standardSetup()
+                    self.logger?.info("[Pod] standardSetup completed in \(String(format: "%.2f", Date().timeIntervalSince(setupStart)))s")
 
                     // Mount all container rootfs
                     for (_, container) in containers {
+                        self.logger?.info("[Pod] Mounting rootfs for container '\(container.id)'...")
                         guard let attachments = vm.mounts[container.id], let rootfsAttachment = attachments.first else {
                             throw ContainerizationError(.notFound, message: "rootfs mount not found for container \(container.id)")
                         }
                         var rootfs = rootfsAttachment.to
                         rootfs.destination = Self.guestRootfsPath(container.id)
                         try await agent.mount(rootfs)
+                        self.logger?.info("[Pod] rootfs mounted at \(rootfs.destination) for '\(container.id)'")
                     }
 
                     // Start up unix socket relays for each container
                     for (_, container) in containers {
                         for socket in container.config.sockets {
+                            self.logger?.info("[Pod] Setting up socket relay for '\(container.id)'...")
                             try await self.relayUnixSocket(
                                 socket: socket,
                                 containerID: container.id,
@@ -346,15 +358,18 @@ extension LinuxPod {
                     // 3. If a gateway IP address is present, add the default route.
                     for (index, i) in self.interfaces.enumerated() {
                         let name = "eth\(index)"
+                        self.logger?.info("[Pod] Configuring network interface \(name) (\(i.address))...")
                         try await agent.addressAdd(name: name, address: i.address)
                         try await agent.up(name: name, mtu: 1500)
                         if let gateway = i.gateway {
                             try await agent.routeAddDefault(name: name, gateway: gateway)
                         }
+                        self.logger?.info("[Pod] Network interface \(name) configured")
                     }
 
                     // Setup /etc/resolv.conf if asked for
                     if let dns = self.config.dns {
+                        self.logger?.info("[Pod] Configuring DNS...")
                         // Configure DNS in each container's rootfs
                         for (_, container) in containers {
                             try await agent.configureDNS(
@@ -362,6 +377,7 @@ extension LinuxPod {
                                 location: Self.guestRootfsPath(container.id)
                             )
                         }
+                        self.logger?.info("[Pod] DNS configured")
                     }
                 }
 
@@ -371,7 +387,9 @@ extension LinuxPod {
                 }
 
                 state.phase = .created(.init(vm: vm, relayManager: relayManager))
+                self.logger?.info("[Pod] Pod creation complete, all containers in 'created' state")
             } catch {
+                self.logger?.error("[Pod] Pod creation FAILED at runtime setup: \(error)")
                 try? await relayManager.stopAll()
                 try? await vm.stop()
                 state.phase.setErrored(error: error)
@@ -399,12 +417,15 @@ extension LinuxPod {
                 )
             }
 
+            self.logger?.info("[Pod] Dialing agent for container '\(containerID)'...")
             let agent = try await createdState.vm.dialAgent()
             do {
                 var spec = self.generateRuntimeSpec(containerID: containerID, config: container.config)
                 // We don't need the rootfs, nor do OCI runtimes want it included.
                 let containerMounts = createdState.vm.mounts[containerID] ?? []
                 spec.mounts = containerMounts.dropFirst().map { $0.to }
+
+                self.logger?.info("[Pod] Starting process for '\(containerID)' — command: \(container.config.process.arguments)")
 
                 let stdio = IOUtil.setup(
                     portAllocator: self.hostVsockPorts,
@@ -427,7 +448,9 @@ extension LinuxPod {
                 container.process = process
                 container.state = .started
                 state.containers[containerID] = container
+                self.logger?.info("[Pod] Container '\(containerID)' process started successfully")
             } catch {
+                self.logger?.error("[Pod] Container '\(containerID)' process start FAILED: \(error)")
                 try? await agent.close()
                 throw error
             }

@@ -162,6 +162,17 @@ public struct PrerequisiteChecker: Sendable {
         return path
     }
     
+    /// Get the path to the pre-init shim binary.
+    ///
+    /// The pre-init binary mounts `/proc` (required by the Swift runtime in
+    /// vminitd) before exec'ing `/sbin/vminitd`.
+    public func getPreInitPath() throws -> URL {
+        guard let path = getResourcePath("pre-init") else {
+            throw ContainerizationError(.notFound, message: "pre-init binary not found in Resources/. Cross-compile it with: zig cc --target=aarch64-linux-musl -static -Os -o pre-init pre-init.c")
+        }
+        return path
+    }
+
     /// Get the path to the Linux kernel.
     public func getKernelPath() throws -> URL {
         guard let path = getResourcePath("vmlinux") else {
