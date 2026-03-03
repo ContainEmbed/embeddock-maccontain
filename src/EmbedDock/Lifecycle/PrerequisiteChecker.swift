@@ -91,13 +91,17 @@ public struct PrerequisiteChecker: Sendable {
             throw error
         }
         
-        // Check 4: Init filesystem (optional - can be created)
-        let initBlockURL = workDir.appendingPathComponent("init.block")
-        if FileManager.default.fileExists(atPath: initBlockURL.path) {
-            logger.info("✅ [PrerequisiteChecker] init.block found at: \(initBlockURL.path)")
+        // Check 4: Init filesystem — prefer bundled Resources/init.block, fall back to workDir cache
+        if let bundledURL = getBundledInitBlockPath() {
+            logger.info("✅ [PrerequisiteChecker] init.block found in Resources: \(bundledURL.path)")
         } else {
-            logger.warning("⚠️ [PrerequisiteChecker] init.block NOT FOUND (will attempt to create)")
-            logger.info("📝 [PrerequisiteChecker] Will be created at: \(initBlockURL.path)")
+            let workDirURL = workDir.appendingPathComponent("init.block")
+            if FileManager.default.fileExists(atPath: workDirURL.path) {
+                logger.info("✅ [PrerequisiteChecker] init.block found in workDir: \(workDirURL.path)")
+            } else {
+                logger.warning("⚠️ [PrerequisiteChecker] init.block NOT FOUND (will attempt to create)")
+                logger.info("📝 [PrerequisiteChecker] Run 'make init-block' to build it, or it will be created from vminit:latest at runtime")
+            }
         }
 
         #if os(macOS)
@@ -167,14 +171,22 @@ public struct PrerequisiteChecker: Sendable {
         return path
     }
     
-    /// Get the path to the init block file.
+    /// Get the path to the init block file in the app bundle / source-tree Resources.
+    ///
+    /// Returns `nil` when init.block has not been built yet (`make init-block`).
+    public func getBundledInitBlockPath() -> URL? {
+        getResourcePath("init.block")
+    }
+
+    /// Get the path to the init block file in the working directory (runtime cache).
     public func getInitBlockPath() -> URL {
         workDir.appendingPathComponent("init.block")
     }
-    
-    /// Check if init block exists.
+
+    /// Check if init block exists (bundled or cached in workDir).
     public func initBlockExists() -> Bool {
-        FileManager.default.fileExists(atPath: getInitBlockPath().path)
+        getBundledInitBlockPath() != nil
+            || FileManager.default.fileExists(atPath: getInitBlockPath().path)
     }
 
     #if os(macOS)

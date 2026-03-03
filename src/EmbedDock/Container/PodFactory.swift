@@ -179,22 +179,35 @@ actor PodFactory {
     
     // MARK: - Init Filesystem
     
-    /// Prepare the init filesystem, using cached version or creating new.
+    /// Prepare the init filesystem, using the bundled Resources/init.block when available.
     ///
-    /// - Parameter imageStore: The image store for loading init images.
+    /// Resolution order:
+    ///   1. Bundled `init.block` in app bundle / source-tree Resources (built by `make init-block`)
+    ///   2. Cached `init.block` in workDir (created in a previous run)
+    ///   3. Dynamic creation from `vminit:latest` container image (last resort)
+    ///
+    /// - Parameter imageStore: The image store for loading init images (used only as fallback).
     /// - Returns: The init filesystem mount.
     func prepareInitFilesystem(imageStore: ImageStore) async throws -> Containerization.Mount {
+        // 1. Prefer the pre-built init.block bundled in Resources.
+        if let bundledURL = prerequisiteChecker.getBundledInitBlockPath() {
+            logger.info("✅ [PodFactory] Using bundled init.block from Resources: \(bundledURL.path)")
+            return .block(format: "ext4", source: bundledURL.path, destination: "/", options: ["ro"])
+        }
+
+        // 2. Fall back to a previously cached init.block in the working directory.
         let initBlockURL = workDir.appendingPathComponent("init.block")
         logger.debug("📍 [PodFactory] Init block path: \(initBlockURL.path)")
-        
+
         if FileManager.default.fileExists(atPath: initBlockURL.path) {
-            logger.info("✅ [PodFactory] Using existing init.block")
+            logger.info("✅ [PodFactory] Using cached init.block from workDir")
             return .block(format: "ext4", source: initBlockURL.path, destination: "/", options: ["ro"])
         }
-        
+
+        // 3. Last resort: build from vminit:latest container image.
         logger.info("🔍 [PodFactory] Creating init.block from vminit:latest")
         let initReference = "vminit:latest"
-        
+
         do {
             let initImage = try await imageStore.getInitImage(reference: initReference)
             let initfs = try await initImage.initBlock(at: initBlockURL, for: SystemPlatform.linuxArm)
@@ -203,8 +216,9 @@ actor PodFactory {
         } catch {
             logger.error("❌ [PodFactory] Failed to get init image: \(error.localizedDescription)")
             throw ContainerizationError(
-                .notFound, 
-                message: "Init image 'vminit:latest' not found. Please create it first using: make init"
+                .notFound,
+                message: "init.block not found. Run 'make init-block' to build it, "
+                    + "or create 'vminit:latest' image with: make init"
             )
         }
     }
