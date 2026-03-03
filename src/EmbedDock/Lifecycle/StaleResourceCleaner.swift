@@ -241,12 +241,58 @@ public struct StaleResourceCleaner: Sendable {
         return removed
     }
 
-    // MARK: - Phase 4: Port Check
+    // MARK: - Phase 4: Port Check and Release
 
-    /// Attempts a non-blocking bind on the previously used port to detect TIME_WAIT.
-    /// Returns `true` if the port appears to be in use (log a warning; the OS will clear it).
+    /// Check if the previously used port is still in use, and actively
+    /// release it by killing stale processes if necessary.
+    ///
+    /// Returns `true` if the port is still blocked after cleanup attempts.
     private func checkPort(_ port: Int?) -> Bool {
         guard let port, port > 0 else { return false }
+
+        // Quick bind test
+        if isPortFree(port) {
+            logger.debug("[StaleResourceCleaner] Port \(port) is free")
+            return false
+        }
+
+        logger.warning("[StaleResourceCleaner] Port \(port) is in use — attempting to release")
+
+        // Find and kill stale processes holding the port
+        let currentPID = ProcessInfo.processInfo.processIdentifier
+        let pids = findPIDsOnPort(port)
+
+        for pid in pids where pid != currentPID {
+            logger.warning("[StaleResourceCleaner] Killing stale process PID \(pid) on port \(port)")
+            kill(pid, SIGTERM)
+        }
+
+        // Wait briefly for processes to exit
+        if !pids.isEmpty {
+            Thread.sleep(forTimeInterval: 1.0)
+
+            // Force kill any survivors
+            for pid in pids where pid != currentPID {
+                if kill(pid, 0) == 0 {
+                    logger.warning("[StaleResourceCleaner] PID \(pid) still alive, sending SIGKILL")
+                    kill(pid, SIGKILL)
+                }
+            }
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+
+        // Re-check
+        if isPortFree(port) {
+            logger.info("[StaleResourceCleaner] Port \(port) successfully released")
+            return false
+        } else {
+            logger.warning("[StaleResourceCleaner] Port \(port) is still in use (TIME_WAIT or external process)")
+            return true
+        }
+    }
+
+    /// Check if a port is free by attempting a non-blocking bind.
+    private func isPortFree(_ port: Int) -> Bool {
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         guard fd >= 0 else { return false }
         defer { close(fd) }
@@ -264,14 +310,31 @@ public struct StaleResourceCleaner: Sendable {
                 bind(fd, sockaddrPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
             }
         }
+        return result == 0
+    }
 
-        if result == 0 {
-            logger.debug("🧹 [StaleResourceCleaner] Port \(port) is free")
-            return false
-        } else {
-            logger.warning("⚠️ [StaleResourceCleaner] Port \(port) is still in use (TIME_WAIT or other process). It will be released by the OS shortly.")
-            return true
+    /// Find PIDs holding a given port using `lsof`.
+    private func findPIDsOnPort(_ port: Int) -> [Int32] {
+        let process = Process()
+        let pipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+        process.arguments = ["-ti", ":\(port)"]
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return []
         }
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        guard let output = String(data: data, encoding: .utf8), !output.isEmpty else {
+            return []
+        }
+
+        return output.split(separator: "\n").compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
     }
 
     // MARK: - Helpers
