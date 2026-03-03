@@ -75,7 +75,7 @@ public struct PrerequisiteChecker: Sendable {
         do {
             let kernelPath = try getKernelPath()
             logger.info("✅ [PrerequisiteChecker] Kernel found at: \(kernelPath.path)")
-            
+
             // Check kernel size (should be > 10MB)
             let attrs = try FileManager.default.attributesOfItem(atPath: kernelPath.path)
             if let size = attrs[.size] as? Int64 {
@@ -83,28 +83,17 @@ public struct PrerequisiteChecker: Sendable {
             }
         } catch {
             logger.error("❌ [PrerequisiteChecker] Kernel (vmlinux) NOT FOUND")
-            logger.error("📝 [PrerequisiteChecker] Expected locations:")
+            logger.error("📝 [PrerequisiteChecker] Expected in Bundle.module Resources/ or:")
             logger.error("   - \(workDir.path)/vmlinux")
             logger.error("   - ~/.local/share/containerization/vmlinux")
-            logger.error("💡 [PrerequisiteChecker] Download from: https://github.com/kata-containers/kata-containers/releases")
-            logger.error("💡 [PrerequisiteChecker] Or build with 'make kernel' in kernel/")
             throw error
-        }
-        
-        // Check 4: Init filesystem (optional - can be created)
-        let initBlockURL = workDir.appendingPathComponent("init.block")
-        if FileManager.default.fileExists(atPath: initBlockURL.path) {
-            logger.info("✅ [PrerequisiteChecker] init.block found at: \(initBlockURL.path)")
-        } else {
-            logger.warning("⚠️ [PrerequisiteChecker] init.block NOT FOUND (will attempt to create)")
-            logger.info("📝 [PrerequisiteChecker] Will be created at: \(initBlockURL.path)")
         }
 
         #if os(macOS)
-        // Check 5: Virtualization framework support
+        // Check 4: Virtualization framework support
         try checkVirtualizationSupport()
 
-        // Check 6: Basic memory availability (uses default VM allocation as baseline)
+        // Check 5: Basic memory availability (uses default VM allocation as baseline)
         try checkMemoryAvailability(requiredBytes: 512 * 1024 * 1024)
         #endif
 
@@ -142,6 +131,14 @@ public struct PrerequisiteChecker: Sendable {
         return nil
     }
     
+    /// Get the path to the pre-init shim binary.
+    public func getPreInitPath() throws -> URL {
+        guard let path = getResourcePath("pre-init") else {
+            throw ContainerizationError(.notFound, message: "pre-init binary not found in Resources/. Please ensure pre-init is cross-compiled for aarch64-linux.")
+        }
+        return path
+    }
+
     /// Get the path to the vminitd binary.
     public func getVminitdPath() throws -> URL {
         guard let path = getResourcePath("vminitd") else {
@@ -159,21 +156,32 @@ public struct PrerequisiteChecker: Sendable {
     }
     
     /// Get the path to the Linux kernel.
+    ///
+    /// Searches in order:
+    /// 1. Bundled resource (Bundle.module / source tree)
+    /// 2. Working directory
+    /// 3. Homebrew installation
+    /// 4. User home directory
     public func getKernelPath() throws -> URL {
-        // Check common locations
+        // Check Bundle.module first (bundled vmlinux in Resources/)
+        if let bundledKernel = getResourcePath("vmlinux") {
+            return bundledKernel
+        }
+
+        // Fallback to common filesystem locations
         let possiblePaths = [
             workDir.appendingPathComponent("vmlinux"),
             URL(fileURLWithPath: "/opt/homebrew/share/containerization/vmlinux"),
             URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".local/share/containerization/vmlinux")
         ]
-        
+
         for path in possiblePaths {
             if FileManager.default.fileExists(atPath: path.path) {
                 return path
             }
         }
-        
-        throw ContainerizationError(.notFound, message: "Linux kernel (vmlinux) not found. Please download from kata-containers or build one.")
+
+        throw ContainerizationError(.notFound, message: "Linux kernel (vmlinux) not found. Ensure vmlinux is in src/EmbedDock/Resources/ or download from kata-containers.")
     }
     
     /// Get the path to the init block file.
