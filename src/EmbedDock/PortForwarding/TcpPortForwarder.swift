@@ -125,10 +125,10 @@ class TcpPortForwarder: ObservableObject {
         logger.info("🚀 [TcpPortForwarder] Starting port forwarding: localhost:\(hostPort) -> container:\(containerPort) via Unix socket relay")
 
         do {
-            // Step 1: Set up the guest-side bridge (direct mode — app listens on Unix socket natively).
+            // Step 1: Set up the guest-side bridge (direct mode with auto-bridge).
             guestBridge = GuestBridge(pod: pod, logger: logger)
-            logger.info("📡 [TcpPortForwarder] Step 1: Direct mode — polling for guest Unix socket")
-            try await guestBridge?.startDirectMode(socketPath: guestSocketPath)
+            logger.info("📡 [TcpPortForwarder] Step 1: Setting up guest bridge (direct mode with auto-bridge)")
+            try await guestBridge?.startDirectMode(socketPath: guestSocketPath, containerPort: containerPort)
 
             // Step 2: Set up the framework's Unix socket relay.
             // This tells vminitd to listen on a vsock port and connect to the
@@ -225,8 +225,43 @@ class TcpPortForwarder: ObservableObject {
     }
     
     // MARK: - Listener Management
-    
+
+    /// Create and start the NWListener with retry logic.
+    ///
+    /// Retries up to 5 times with increasing delays to handle EADDRINUSE
+    /// from stale listeners or TIME_WAIT state after unclean shutdowns.
     private func startListener() async throws {
+        let maxAttempts = 5
+        var lastError: Error?
+
+        for attempt in 1...maxAttempts {
+            if attempt > 1 {
+                logger.info("[TcpPortForwarder] Retry \(attempt)/\(maxAttempts): releasing stale port \(hostPort)...")
+                await releaseStalePort()
+                try await Task.sleep(for: .seconds(attempt - 1))
+            }
+
+            do {
+                try await attemptStartListener()
+                return
+            } catch {
+                lastError = error
+                logger.warning("[TcpPortForwarder] Listener attempt \(attempt)/\(maxAttempts) failed: \(error)")
+                listener?.cancel()
+                listener = nil
+            }
+        }
+
+        throw ContainerizationError(
+            .internalError,
+            message: "Failed to bind port \(hostPort) after \(maxAttempts) attempts. "
+                + "Last error: \(lastError?.localizedDescription ?? "unknown"). "
+                + "Check if another process is using port \(hostPort)."
+        )
+    }
+
+    /// Single attempt to create and start the NWListener.
+    private func attemptStartListener() async throws {
         let parameters = NWParameters.tcp
         parameters.allowLocalEndpointReuse = true
 
@@ -234,45 +269,45 @@ class TcpPortForwarder: ObservableObject {
         if let tcp = parameters.defaultProtocolStack.transportProtocol as? NWProtocolTCP.Options {
             tcp.noDelay = true
         }
-        
+
         do {
             listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: hostPort)!)
         } catch {
             throw ContainerizationError(.internalError, message: "Failed to create listener on port \(hostPort): \(error)")
         }
-        
+
         listener?.stateUpdateHandler = { [weak self] state in
             guard let self = self else { return }
-            
+
             Task { @MainActor in
                 switch state {
                 case .ready:
-                    self.logger.info("✅ [TcpPortForwarder] Listener ready on port \(self.hostPort)")
+                    self.logger.info("[TcpPortForwarder] Listener ready on port \(self.hostPort)")
                 case .failed(let error):
-                    self.logger.error("❌ [TcpPortForwarder] Listener failed: \(error)")
+                    self.logger.error("[TcpPortForwarder] Listener failed: \(error)")
                     self.status = .error("Listener failed: \(error.localizedDescription)")
                 case .cancelled:
-                    self.logger.info("🛑 [TcpPortForwarder] Listener cancelled")
+                    self.logger.info("[TcpPortForwarder] Listener cancelled")
                 default:
                     break
                 }
             }
         }
-        
+
         listener?.newConnectionHandler = { [weak self] connection in
             guard let self = self else { return }
-            
+
             Task { @MainActor in
                 await self.handleNewConnection(connection)
             }
         }
-        
+
         listener?.start(queue: .global(qos: .userInitiated))
-        
+
         // Wait for listener to be ready using a sendable wrapper
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             let resumeOnce = ResumableOnce()
-            
+
             listener?.stateUpdateHandler = { [weak self] state in
                 switch state {
                 case .ready:
@@ -290,13 +325,65 @@ class TcpPortForwarder: ObservableObject {
                 default:
                     break
                 }
-                
+
                 // Restore the original handler
                 if resumeOnce.hasResumed {
                     Task { @MainActor in
                         self?.setupListenerStateHandler()
                     }
                 }
+            }
+        }
+    }
+
+    /// Attempt to release a stale port by killing processes that hold it.
+    ///
+    /// Uses `lsof` to find PIDs listening on the port, then sends SIGTERM
+    /// (and SIGKILL if needed) to release the port for rebinding.
+    private func releaseStalePort() async {
+        let currentPID = ProcessInfo.processInfo.processIdentifier
+
+        // Find PIDs holding the port
+        let lsof = Process()
+        let pipe = Pipe()
+        lsof.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+        lsof.arguments = ["-ti", ":\(hostPort)"]
+        lsof.standardOutput = pipe
+        lsof.standardError = FileHandle.nullDevice
+
+        do {
+            try lsof.run()
+            lsof.waitUntilExit()
+        } catch {
+            logger.debug("[TcpPortForwarder] lsof failed: \(error)")
+            return
+        }
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        guard let output = String(data: data, encoding: .utf8), !output.isEmpty else {
+            logger.debug("[TcpPortForwarder] No process found on port \(hostPort) (likely TIME_WAIT)")
+            return
+        }
+
+        let pids = output.split(separator: "\n").compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
+
+        for pid in pids {
+            if pid == currentPID {
+                logger.debug("[TcpPortForwarder] Skipping own PID \(pid)")
+                continue
+            }
+
+            logger.warning("[TcpPortForwarder] Killing stale process PID \(pid) holding port \(hostPort)")
+            kill(pid, SIGTERM)
+
+            // Brief wait for graceful exit
+            try? await Task.sleep(for: .milliseconds(500))
+
+            // Force kill if still alive
+            if kill(pid, 0) == 0 {
+                logger.warning("[TcpPortForwarder] PID \(pid) still alive, sending SIGKILL")
+                kill(pid, SIGKILL)
+                try? await Task.sleep(for: .milliseconds(200))
             }
         }
     }
