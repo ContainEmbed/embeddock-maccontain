@@ -1,2 +1,4 @@
 src/HelloWorldApp/Resources/vminitd filter=lfs diff=lfs merge=lfs -text
 src/HelloWorldApp/Resources/vmexec filter=lfs diff=lfs merge=lfs -text
+src/EmbedDock/Resources/vminitd filter=lfs diff=lfs merge=lfs -text
+src/EmbedDock/Resources/vmexec filter=lfs diff=lfs merge=lfs -text
