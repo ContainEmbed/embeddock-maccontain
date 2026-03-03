@@ -433,12 +433,12 @@ class TcpPortForwarder: ObservableObject {
             let elapsed = ContinuousClock.now - relayStart
             incoming.cancel()
             try? socketHandle?.close()
-            Task { @MainActor in
-                self.activeConnections.removeValue(forKey: connectionID)
-                self.connectionTasks.removeValue(forKey: connectionID)
-                self.updateConnectionCount()
-                self.logger.info("🔌 [TcpPortForwarder] Connection closed: \(connectionID) (lifetime: \(elapsed))")
-            }
+            // Clean up synchronously — this function is @MainActor-isolated,
+            // so we can access actor state directly without a fire-and-forget Task.
+            activeConnections.removeValue(forKey: connectionID)
+            connectionTasks.removeValue(forKey: connectionID)
+            updateConnectionCount()
+            logger.info("[TcpPortForwarder] Connection closed: \(connectionID) (lifetime: \(elapsed))")
         }
 
         // Wait for incoming connection to be ready
@@ -559,28 +559,55 @@ class TcpPortForwarder: ObservableObject {
                 try? await Task.sleep(for: interval)
                 guard !Task.isCancelled, let self else { break }
 
+                // Safety net: audit activeConnections for stale entries
+                // whose relay has already closed but wasn't cleaned up.
+                self.auditStaleConnections()
+
                 // Only warm when idle — skip if real connections are active.
                 guard self.activeConnections.isEmpty else {
-                    self.logger.debug("🔄 [TcpPortForwarder] Keepalive: skipped (active: \(self.activeConnections.count) connections)")
+                    self.logger.debug("[TcpPortForwarder] Keepalive: skipped (active: \(self.activeConnections.count) connections)")
                     continue
                 }
 
                 guard FileManager.default.fileExists(atPath: self.hostSocketPath) else {
-                    self.logger.warning("⚠️ [TcpPortForwarder] Keepalive: host socket missing at \(self.hostSocketPath), skipping warm-up")
+                    self.logger.warning("[TcpPortForwarder] Keepalive: host socket missing at \(self.hostSocketPath), skipping warm-up")
                     continue
                 }
 
                 // Connect and immediately close to trigger vm.dial() in SocketRelay.
-                self.logger.debug("🔄 [TcpPortForwarder] Keepalive: warming vsock via \(self.hostSocketPath)")
+                self.logger.debug("[TcpPortForwarder] Keepalive: warming vsock via \(self.hostSocketPath)")
                 do {
                     let fd = try self.connectToUnixSocket(path: self.hostSocketPath)
                     try? fd.close()
-                    self.logger.info("🔄 [TcpPortForwarder] Keepalive: vsock warmed successfully")
+                    self.logger.info("[TcpPortForwarder] Keepalive: vsock warmed successfully")
                 } catch {
-                    self.logger.warning("⚠️ [TcpPortForwarder] Keepalive: warm-up attempt failed (non-fatal): \(error)")
+                    self.logger.warning("[TcpPortForwarder] Keepalive: warm-up attempt failed (non-fatal): \(error)")
                 }
             }
-            self?.logger.debug("🔄 [TcpPortForwarder] Keepalive: timer stopped")
+            self?.logger.debug("[TcpPortForwarder] Keepalive: timer stopped")
+        }
+    }
+
+    /// Remove entries from activeConnections where the relay has already closed.
+    ///
+    /// This is a safety net for edge cases where the normal cleanup path
+    /// (defer block in relayConnectionViaUnixSocket) didn't execute — e.g.,
+    /// due to a hung DispatchSource or cancelled task.
+    private func auditStaleConnections() {
+        var staleIDs: [UUID] = []
+        for (id, relay) in activeConnections {
+            if relay.isClosed {
+                staleIDs.append(id)
+            }
+        }
+
+        if !staleIDs.isEmpty {
+            for id in staleIDs {
+                activeConnections.removeValue(forKey: id)
+                connectionTasks.removeValue(forKey: id)
+            }
+            updateConnectionCount()
+            logger.warning("[TcpPortForwarder] Audit: removed \(staleIDs.count) stale connection(s)")
         }
     }
 
