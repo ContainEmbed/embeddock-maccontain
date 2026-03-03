@@ -160,20 +160,11 @@ public struct PrerequisiteChecker: Sendable {
     
     /// Get the path to the Linux kernel.
     public func getKernelPath() throws -> URL {
-        // Check common locations
-        let possiblePaths = [
-            workDir.appendingPathComponent("vmlinux"),
-            URL(fileURLWithPath: "/opt/homebrew/share/containerization/vmlinux"),
-            URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".local/share/containerization/vmlinux")
-        ]
-        
-        for path in possiblePaths {
-            if FileManager.default.fileExists(atPath: path.path) {
-                return path
-            }
+        guard let path = getResourcePath("vmlinux") else {
+            throw ContainerizationError(.notFound, message: "vmlinux kernel not found in Resources/. Please download from kata-containers and place it in the Resources directory.")
         }
         
-        throw ContainerizationError(.notFound, message: "Linux kernel (vmlinux) not found. Please download from kata-containers or build one.")
+        return path
     }
     
     /// Get the path to the init block file.

@@ -13,7 +13,6 @@ libexec/
 *.o
 *.ext4
 *.pkg
-vmlinux
 
 # Archives (build/distribution artifacts)
 *.zip
