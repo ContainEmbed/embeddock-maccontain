@@ -65,8 +65,13 @@ final class ConnectionRelay: @unchecked Sendable {
     private let tcpConnection: NWConnection
     private let vsockHandle: FileHandle
     private let logger: Logger
-    private var isClosed = false
+    private var _isClosed = false
     private let lock = NSLock()
+
+    /// Whether this relay has been closed (thread-safe read).
+    var isClosed: Bool {
+        lock.withLock { _isClosed }
+    }
 
     /// Buffer size for data transfers.
     private let bufferSize = 65536
@@ -105,10 +110,10 @@ final class ConnectionRelay: @unchecked Sendable {
     func close(reason: String = "unspecified") {
         var alreadyClosed = false
         lock.withLock {
-            if isClosed {
+            if _isClosed {
                 alreadyClosed = true
             } else {
-                isClosed = true
+                _isClosed = true
             }
         }
 
@@ -313,6 +318,9 @@ final class ConnectionRelay: @unchecked Sendable {
                     if let error {
                         self.logger.warning("⚠️ [Relay:\(shortID)] Vsock->TCP TCP send error: \(error)")
                         self.close(reason: "vsock-to-tcp-send-error:\(error)")
+                        // Resume before cancel — a suspended DispatchSource may not
+                        // fire its cancel handler, causing the relay to hang forever.
+                        source.resume()
                         source.cancel()
                     } else {
                         source.resume()
