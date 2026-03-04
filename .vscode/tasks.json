@@ -4,7 +4,7 @@
         {
             "label": "Kill, Build and Sign HelloWorldApp",
             "type": "shell",
-            "command": "pkill -f HelloWorldApp 2>/dev/null; sleep 1; swift build && codesign --force --sign - --entitlements signing/vz.entitlements .build/arm64-apple-macosx/debug/HelloWorldApp",
+            "command": "pkill -f HelloWorldApp 2>/dev/null; sleep 1; cd Examples/HelloWorldApp && swift build && codesign --force --sign - --entitlements ../../signing/vz.entitlements .build/arm64-apple-macosx/debug/HelloWorldApp",
             "problemMatcher": [],
             "group": "build"
         }

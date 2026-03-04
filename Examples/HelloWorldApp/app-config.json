@@ -1,0 +1,22 @@
+{
+    "CFBundleDevelopmentRegion": "en",
+    "CFBundleExecutable": "HelloWorldApp",
+    "CFBundleIdentifier": "com.example.HelloWorldApp",
+    "CFBundleInfoDictionaryVersion": "6.0",
+    "CFBundleName": "HelloWorldApp",
+    "CFBundlePackageType": "APPL",
+    "CFBundleShortVersionString": "1.0",
+    "CFBundleVersion": "1",
+    "LSMinimumSystemVersion": "13.0",
+    "NSHumanReadableCopyright": "Copyright © 2025. All rights reserved.",
+    "NSPrincipalClass": "NSApplication",
+    "NSHighResolutionCapable": true,
+    "CFBundleDocumentTypes": [
+        {
+            "CFBundleTypeName": "JavaScript File",
+            "CFBundleTypeRole": "Viewer",
+            "LSItemContentTypes": ["com.netscape.javascript-source"],
+            "LSHandlerRank": "Default"
+        }
+    ]
+}
