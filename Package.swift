@@ -20,13 +20,9 @@ import Foundation
 import PackageDescription
 
 let package = Package(
-    name: "HelloWorldApp",
+    name: "EmbedDock",
     platforms: [.macOS("15")],
     products: [
-        .executable(
-            name: "HelloWorldApp",
-            targets: ["HelloWorldApp"]
-        ),
         .library(
             name: "EmbedDock",
             targets: ["EmbedDock"]
@@ -68,17 +64,7 @@ let package = Package(
         .package(url: "https://github.com/swiftlang/swift-docc-plugin", from: "1.1.0"),
     ],
     targets: [
-        .executableTarget(
-            name: "HelloWorldApp",
-            dependencies: [
-                .product(name: "Logging", package: "swift-log"),
-                "EmbedDock",
-            ],
-            path: "src/HelloWorldApp",
-            swiftSettings: [
-                .unsafeFlags(["-parse-as-library"])
-            ]
-        ),
+        // MARK: - Main Library
         .target(
             name: "EmbedDock",
             dependencies: [
@@ -92,17 +78,14 @@ let package = Package(
                 "ContainerizationOS",
                 "ContainerizationIO",
             ],
-            path: "src/EmbedDock",
-            exclude: [
-                "Containerization"
-            ],
             resources: [
                 .copy("Resources")
             ]
         ),
+
+        // MARK: - Containerization Targets
         .target(
-            name: "ContainerizationError",
-            path: "src/EmbedDock/Containerization/ContainerizationError"
+            name: "ContainerizationError"
         ),
         .target(
             name: "Containerization",
@@ -117,29 +100,9 @@ let package = Package(
                 "ContainerizationExtras",
                 .target(name: "ContainerizationEXT4", condition: .when(platforms: [.macOS])),
             ],
-            path: "src/EmbedDock/Containerization/Containerization",
             exclude: [
                 "SandboxContext/SandboxContext.proto"
             ]
-        ),
-        .executableTarget(
-            name: "cctl",
-            dependencies: [
-                .product(name: "Logging", package: "swift-log"),
-                .product(name: "ArgumentParser", package: "swift-argument-parser"),
-                "Containerization",
-                "ContainerizationOS",
-            ],
-            path: "src/EmbedDock/Containerization/cctl"
-        ),
-        .executableTarget(
-            name: "containerization-integration",
-            dependencies: [
-                .product(name: "Logging", package: "swift-log"),
-                .product(name: "ArgumentParser", package: "swift-argument-parser"),
-                "Containerization",
-            ],
-            path: "src/EmbedDock/Containerization/Integration"
         ),
         .target(
             name: "ContainerizationEXT4",
@@ -147,8 +110,7 @@ let package = Package(
                 .target(name: "ContainerizationArchive", condition: .when(platforms: [.macOS])),
                 .product(name: "SystemPackage", package: "swift-system"),
                 "ContainerizationOS",
-            ],
-            path: "src/EmbedDock/Containerization/ContainerizationEXT4"
+            ]
         ),
         .target(
             name: "ContainerizationArchive",
@@ -156,16 +118,11 @@ let package = Package(
                 "CArchive",
                 .product(name: "SystemPackage", package: "swift-system"),
                 "ContainerizationExtras",
-            ],
-            path: "src/EmbedDock/Containerization/ContainerizationArchive",
-            exclude: [
-                "CArchive"
             ]
         ),
         .target(
             name: "CArchive",
             dependencies: [],
-            path: "src/EmbedDock/Containerization/ContainerizationArchive/CArchive",
             cSettings: [
                 .define(
                     "PLATFORM_CONFIG_H", to: "\"config_darwin.h\"",
@@ -191,8 +148,7 @@ let package = Package(
                 "ContainerizationError",
                 "ContainerizationOS",
                 "ContainerizationExtras",
-            ],
-            path: "src/EmbedDock/Containerization/ContainerizationOCI"
+            ]
         ),
         .target(
             name: "ContainerizationNetlink",
@@ -200,8 +156,7 @@ let package = Package(
                 .product(name: "Logging", package: "swift-log"),
                 "ContainerizationOS",
                 "ContainerizationExtras",
-            ],
-            path: "src/EmbedDock/Containerization/ContainerizationNetlink"
+            ]
         ),
         .target(
             name: "ContainerizationOS",
@@ -209,8 +164,7 @@ let package = Package(
                 .product(name: "Logging", package: "swift-log"),
                 "CShim",
                 "ContainerizationError",
-            ],
-            path: "src/EmbedDock/Containerization/ContainerizationOS"
+            ]
         ),
         .target(
             name: "ContainerizationIO",
@@ -219,8 +173,7 @@ let package = Package(
                 .product(name: "NIO", package: "swift-nio"),
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOFoundationCompat", package: "swift-nio"),
-            ],
-            path: "src/EmbedDock/Containerization/ContainerizationIO"
+            ]
         ),
         .target(
             name: "ContainerizationExtras",
@@ -228,12 +181,29 @@ let package = Package(
                 "ContainerizationError",
                 .product(name: "Collections", package: "swift-collections"),
                 .product(name: "Logging", package: "swift-log"),
-            ],
-            path: "src/EmbedDock/Containerization/ContainerizationExtras"
+            ]
         ),
         .target(
-            name: "CShim",
-            path: "src/EmbedDock/Containerization/CShim"
+            name: "CShim"
+        ),
+
+        // MARK: - Executables
+        .executableTarget(
+            name: "cctl",
+            dependencies: [
+                .product(name: "Logging", package: "swift-log"),
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                "Containerization",
+                "ContainerizationOS",
+            ]
+        ),
+        .executableTarget(
+            name: "containerization-integration",
+            dependencies: [
+                .product(name: "Logging", package: "swift-log"),
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                "Containerization",
+            ]
         ),
     ]
 )
