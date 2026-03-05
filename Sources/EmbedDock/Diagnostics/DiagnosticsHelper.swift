@@ -280,8 +280,8 @@ final class DiagnosticsHelper: @unchecked Sendable {
         do {
             let stats = try await pod.statistics()
             for stat in stats {
-                logger.error("🔍 [Diagnostics] Container '\(stat.id)' - CPU: \(stat.cpu.usageUsec)us, Memory: \(stat.memory.usageBytes) bytes")
-                statsResult.append((id: stat.id, cpuUsec: stat.cpu.usageUsec, memoryBytes: stat.memory.usageBytes))
+                logger.error("🔍 [Diagnostics] Container '\(stat.id)' - CPU: \(stat.cpu?.usageUsec ?? 0)us, Memory: \(stat.memory?.usageBytes ?? 0) bytes")
+                statsResult.append((id: stat.id, cpuUsec: stat.cpu?.usageUsec ?? 0, memoryBytes: stat.memory?.usageBytes ?? 0))
             }
         } catch {
             logger.error("🔍 [Diagnostics] Could not get statistics: \(error.localizedDescription)")

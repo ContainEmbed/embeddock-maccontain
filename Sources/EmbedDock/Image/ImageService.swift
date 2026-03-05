@@ -177,8 +177,8 @@ actor ImageService {
         }
         
         // Check keychain
-        let keychain = KeychainHelper(id: "com.example.HelloWorldApp")
-        if let auth = try? keychain.lookup(domain: host) {
+        let keychain = KeychainHelper(securityDomain: "com.example.HelloWorldApp")
+        if let auth = try? keychain.lookup(hostname: host) {
             return try await body(auth)
         }
         

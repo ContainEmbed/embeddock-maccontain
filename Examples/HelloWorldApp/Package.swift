@@ -3,7 +3,7 @@
 // HelloWorldApp - Example application demonstrating EmbedDock usage
 //
 // Build:   swift build
-// Sign:    codesign --force --sign - --entitlements signing/vz.entitlements \
+// Sign:    codesign --force --sign - --entitlements vz.entitlements \
 //            .build/arm64-apple-macosx/debug/HelloWorldApp
 // Run:     .build/arm64-apple-macosx/debug/HelloWorldApp
 //===----------------------------------------------------------------------===//
@@ -14,7 +14,7 @@ let package = Package(
     name: "HelloWorldApp",
     platforms: [.macOS("15")],
     dependencies: [
-        .package(url: "https://github.com/ContainEmbed/embeddock-maccontain", branch: "feature/optmising_packageing_init_block"),
+        .package(path: "../../"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.0.0"),
     ],
     targets: [

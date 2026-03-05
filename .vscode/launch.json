@@ -7,49 +7,9 @@
             "request": "launch",
             "program": "${workspaceFolder}/Examples/HelloWorldApp/.build/arm64-apple-macosx/debug/HelloWorldApp",
             "args": [],
-            "cwd": "${workspaceFolder}",
+            "cwd": "${workspaceFolder}/Examples/HelloWorldApp",
             "preLaunchTask": "Kill, Build and Sign HelloWorldApp",
             "terminal": "integrated"
-        },
-        {
-            "type": "swift",
-            "request": "launch",
-            "args": [],
-            "cwd": "${workspaceFolder:embeddock-maccontain}",
-            "name": "Debug cctl",
-            "target": "cctl",
-            "configuration": "debug",
-            "preLaunchTask": "swift: Build Debug cctl"
-        },
-        {
-            "type": "swift",
-            "request": "launch",
-            "args": [],
-            "cwd": "${workspaceFolder:embeddock-maccontain}",
-            "name": "Release cctl",
-            "target": "cctl",
-            "configuration": "release",
-            "preLaunchTask": "swift: Build Release cctl"
-        },
-        {
-            "type": "swift",
-            "request": "launch",
-            "args": [],
-            "cwd": "${workspaceFolder:embeddock-maccontain}",
-            "name": "Debug containerization-integration",
-            "target": "containerization-integration",
-            "configuration": "debug",
-            "preLaunchTask": "swift: Build Debug containerization-integration"
-        },
-        {
-            "type": "swift",
-            "request": "launch",
-            "args": [],
-            "cwd": "${workspaceFolder:embeddock-maccontain}",
-            "name": "Release containerization-integration",
-            "target": "containerization-integration",
-            "configuration": "release",
-            "preLaunchTask": "swift: Build Release containerization-integration"
         }
     ]
 }

@@ -79,6 +79,7 @@ struct InitBlockGenerator {
                 ("/dev",           0o755),
                 ("/dev/pts",       0o755),
                 ("/proc",          0o555),
+                ("/proc/self",     0o555),
                 ("/run",           0o755),
                 ("/run/container", 0o755),
                 ("/etc",           0o755),
@@ -93,6 +94,20 @@ struct InitBlockGenerator {
                     gid: 0
                 )
             }
+
+            // Create /proc/self/exe symlink pointing to vminitd.
+            // The Swift runtime reads /proc/self/exe to locate the executable. When the kernel
+            // boots with init=/sbin/vminitd, /proc is not yet mounted, so we place a static
+            // symlink on the rootfs. Once procfs is mounted over /proc, the real /proc/self/exe
+            // takes over. The link target omits the leading '/' per EXT4.Formatter convention.
+            logger.debug("🔗 [InitBlockGenerator] Creating symlink: /proc/self/exe -> sbin/vminitd")
+            try formatter.create(
+                path: FilePath("/proc/self/exe"),
+                link: FilePath("sbin/vminitd"),
+                mode: EXT4.Inode.Mode(.S_IFLNK, 0o777),
+                uid: 0,
+                gid: 0
+            )
 
             // Write pre-init shim (PID 1 bootstrap — mounts /proc, /sys, /dev then exec's vminitd)
             logger.info("📝 [InitBlockGenerator] Writing /init (pre-init shim)...")
