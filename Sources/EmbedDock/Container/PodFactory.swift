@@ -17,6 +17,7 @@
 import Foundation
 import Containerization
 import ContainerizationEXT4
+import ContainerizationExtras
 import ContainerizationError
 import Logging
 import NIO
@@ -135,9 +136,9 @@ actor PodFactory {
             podConfig.cpus = config.cpus
             podConfig.memoryInBytes = config.memoryInBytes
             podConfig.interfaces = [
-                NATInterface(address: config.networkAddress, gateway: config.networkGateway)
+                NATInterface(ipv4Address: try CIDRv4(config.networkAddress), ipv4Gateway: try IPv4Address(config.networkGateway))
             ]
-            podConfig.bootlog = bootlogPath
+            podConfig.bootLog = .file(path: bootlogPath)
         }
         
         logger.info("✅ [PodFactory] Pod created: \(podID)")
