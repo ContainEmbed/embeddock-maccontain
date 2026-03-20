@@ -15,8 +15,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/containerization.git",
       "state" : {
-        "branch" : "6f9ae02",
-        "revision" : "6f9ae029339b14f122041aba9976ed6ee79581ff"
+        "branch" : "main",
+        "revision" : "d8fcd1e9ca4dbda05fd0bdbe9bbccdb250fe96e8"
       }
     },
     {
