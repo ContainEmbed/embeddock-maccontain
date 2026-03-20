@@ -107,7 +107,7 @@ final class StartupCoordinator {
         // ~/Desktop is TCC-protected on macOS; this triggers the permission
         // prompt and fails fast if access is denied, instead of hanging
         // during the guest VirtioFS mount.
-        let hostSharePath = "/Users/babithbabyvarghese/Desktop"
+        let hostSharePath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop").path
         let hostShareURL = URL(fileURLWithPath: hostSharePath)
         do {
             _ = try FileManager.default.contentsOfDirectory(at: hostShareURL, includingPropertiesForKeys: nil)

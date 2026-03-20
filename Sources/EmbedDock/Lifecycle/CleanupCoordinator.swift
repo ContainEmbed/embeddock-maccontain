@@ -135,7 +135,7 @@ actor CleanupCoordinator {
         logger.info("🧹 [CleanupCoordinator] Starting cleanup with \(masterTimeout)s master timeout")
         
         do {
-            try await Timeout.run(seconds: masterTimeout) { [self] in
+            _ = try await Timeout.run(seconds: masterTimeout) { [self] in
                 await self.performFullCleanup(
                     pod: pod,
                     portForwarder: portForwarder,
