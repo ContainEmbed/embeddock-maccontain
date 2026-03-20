@@ -35,21 +35,9 @@ Then add the product to your target:
 )
 ```
 
-### Download VM Binaries
+### VM Binaries
 
-EmbedDock requires VM guest binaries (vminitd, vmexec, vmlinux, pre-init) that are not included in the git repository due to their size (~239MB). Download them after cloning:
-
-```bash
-./scripts/download-resources.sh
-```
-
-Or download a specific version:
-
-```bash
-./scripts/download-resources.sh 0.1.0
-```
-
-> **Note:** The download script uses `gh` CLI if available (handles authentication), otherwise falls back to `curl`.
+EmbedDock includes VM guest binaries (vminitd, vmexec, vmlinux, pre-init) distributed as a Swift Package Manager artifact bundle. They are downloaded automatically when you resolve the package — no manual steps required.
 
 ### Entitlements
 
