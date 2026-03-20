@@ -1,0 +1,6 @@
+// This directory holds VM binaries required by EmbedDock at runtime.
+//
+// The binaries are NOT committed to git. To download them, run:
+//   ./scripts/download-resources.sh
+//
+// Required files: vminitd, vmexec, vmlinux, pre-init
