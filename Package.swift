@@ -17,11 +17,21 @@ let package = Package(
         ),
     ],
     dependencies: [
-        .package(url: "https://github.com/apple/containerization.git", branch: "main"),
+        .package(url: "https://github.com/apple/containerization.git", exact: "0.26.5"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.80.0"),
     ],
     targets: [
+        .binaryTarget(
+            name: "EmbedDockResources",
+            url: "https://github.com/ContainEmbed/embeddock-maccontain/releases/download/0.2.0/EmbedDockResources.artifactbundle.zip",
+            checksum: "d5c33a56eeaca15c9d5756ea3ca7cf53c1caaf45211c053e9669849b5c9d2230"
+        ),
+        .plugin(
+            name: "CopyResourcesPlugin",
+            capability: .buildTool(),
+            dependencies: ["EmbedDockResources"]
+        ),
         .target(
             name: "EmbedDock",
             dependencies: [
@@ -35,9 +45,9 @@ let package = Package(
                 .product(name: "ContainerizationOS", package: "containerization"),
                 .product(name: "ContainerizationIO", package: "containerization"),
             ],
-            resources: [
-                .copy("Resources")
-            ]
+            path: "Sources",
+            exclude: ["LinuxGuest"],
+            plugins: ["CopyResourcesPlugin"]
         ),
     ]
 )

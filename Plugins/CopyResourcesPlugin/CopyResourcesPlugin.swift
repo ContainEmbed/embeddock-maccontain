@@ -17,7 +17,7 @@ struct CopyResourcesPlugin: BuildToolPlugin {
             let outputFile = outputDir.appending(path: name)
 
             commands.append(.prebuildCommand(
-                displayName: "Copy \(name) to Resources",
+                displayName: "Copy \(name) from artifact bundle",
                 executable: URL(fileURLWithPath: "/bin/cp"),
                 arguments: [tool.url.path(), outputFile.path()],
                 outputFilesDirectory: outputDir

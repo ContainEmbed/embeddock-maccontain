@@ -104,29 +104,21 @@ public struct PrerequisiteChecker: Sendable {
     
     /// Find a resource file by name.
     ///
-    /// Searches in:
-    /// 1. Application bundle resources
-    /// 2. Source tree Resources directory (for development)
+    /// Searches in the SPM module bundle (populated by the CopyResourcesPlugin
+    /// from the artifact bundle downloaded via the binary target).
     public func getResourcePath(_ name: String) -> URL? {
-        // Try to find in SPM-generated resource bundle (EmbedDock's Bundle.module)
-        if let url = Bundle.module.url(forResource: name, withExtension: nil, subdirectory: "Resources") {
+        // Plugin-generated resources appear at top level in Bundle.module
+        if let url = Bundle.module.url(forResource: name, withExtension: nil) {
             logger.info("✅ [PrerequisiteChecker] Found in module bundle: \(url.path)")
             return url
         }
-        
-        // Try in source tree Resources directory for development
-        // Use #filePath to resolve relative to this source file's location (EmbedDock/Lifecycle/)
-        let thisFileURL = URL(fileURLWithPath: #filePath)
-        let embedDockDir = thisFileURL.deletingLastPathComponent().deletingLastPathComponent() // up from Lifecycle/ to EmbedDock/
-        let sourceResourcesURL = embedDockDir.appendingPathComponent("Resources/\(name)")
-        logger.debug("🔍 [PrerequisiteChecker] EmbedDock dir: \(embedDockDir.path)")
-        logger.debug("🔍 [PrerequisiteChecker] Checking source tree: \(sourceResourcesURL.path)")
-        logger.debug("🔍 [PrerequisiteChecker] File exists: \(FileManager.default.fileExists(atPath: sourceResourcesURL.path))")
-        if FileManager.default.fileExists(atPath: sourceResourcesURL.path) {
-            logger.info("✅ [PrerequisiteChecker] Found in source tree: \(sourceResourcesURL.path)")
-            return sourceResourcesURL
+
+        // Fallback: try with "Resources" subdirectory for backward compatibility
+        if let url = Bundle.module.url(forResource: name, withExtension: nil, subdirectory: "Resources") {
+            logger.info("✅ [PrerequisiteChecker] Found in module bundle (Resources/): \(url.path)")
+            return url
         }
-        
+
         logger.error("❌ [PrerequisiteChecker] Could not find resource: \(name)")
         return nil
     }
