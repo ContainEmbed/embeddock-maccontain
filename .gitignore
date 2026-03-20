@@ -1,28 +1,45 @@
+# macOS
 .DS_Store
-bin
-libexec
-.build
-.local
-xcuserdata/
+**/.DS_Store
+
+# Xcode / Swift
+.build/
 DerivedData/
+xcuserdata/
 .swiftpm/
-.netrc
-.swiftpm
-workdir/
-installer/
-.venv/
-test_results/
-*.pid
-*.log
-*.zip
+
+# SPM lockfile - libraries should not commit this
+Package.resolved
+
+# VM binaries (downloaded via scripts/download-resources.sh)
+Sources/EmbedDock/Resources/vminitd
+Sources/EmbedDock/Resources/vmexec
+Sources/EmbedDock/Resources/vmlinux
+Sources/EmbedDock/Resources/pre-init
+
+# Artifact bundle (build artifact, not committed)
+EmbedDockResources.artifactbundle/
+
+# Local binaries and build output
 *.o
 *.ext4
 *.pkg
-*.swp
+
+# Archives (build/distribution artifacts)
+*.zip
 *.tar.gz
 *.tar.xz
-vmlinux
 
-# API docs for local preview only.
-_site/
-_serve/
+# Editor / IDE
+*.swp
+.vscode/
+
+# Runtime / logs
+*.pid
+*.log
+
+# Credentials
+.netrc
+
+# Local config
+.local
