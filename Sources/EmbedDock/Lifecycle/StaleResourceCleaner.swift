@@ -119,7 +119,7 @@ public struct StaleResourceCleaner: Sendable {
         let bootlogsRemoved = pruneBootlogs(manifestPaths: entry.bootlogPaths)
 
         // Phase 4: Check port occupancy (informational)
-        let portBlocked = checkPort(entry.hostPort)
+        let portBlocked = await checkPort(entry.hostPort)
 
         // Delete manifest file
         try? FileManager.default.removeItem(at: manifestURL)
@@ -247,7 +247,7 @@ public struct StaleResourceCleaner: Sendable {
     /// release it by killing stale processes if necessary.
     ///
     /// Returns `true` if the port is still blocked after cleanup attempts.
-    private func checkPort(_ port: Int?) -> Bool {
+    private func checkPort(_ port: Int?) async -> Bool {
         guard let port, port > 0 else { return false }
 
         // Quick bind test
@@ -269,7 +269,7 @@ public struct StaleResourceCleaner: Sendable {
 
         // Wait briefly for processes to exit
         if !pids.isEmpty {
-            Thread.sleep(forTimeInterval: 1.0)
+            try? await Task.sleep(for: .seconds(1))
 
             // Force kill any survivors
             for pid in pids where pid != currentPID {
@@ -278,7 +278,7 @@ public struct StaleResourceCleaner: Sendable {
                     kill(pid, SIGKILL)
                 }
             }
-            Thread.sleep(forTimeInterval: 0.5)
+            try? await Task.sleep(for: .seconds(0.5))
         }
 
         // Re-check

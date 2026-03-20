@@ -32,7 +32,6 @@ EmbedDockResources.artifactbundle/
 
 # Editor / IDE
 *.swp
-.vscode/
 
 # Runtime / logs
 *.pid
