@@ -1,3 +1,1 @@
-Sources/EmbedDock/Resources/vminitd filter=lfs diff=lfs merge=lfs -text
-Sources/EmbedDock/Resources/vmexec filter=lfs diff=lfs merge=lfs -text
-Sources/EmbedDock/Resources/vmlinux filter=lfs diff=lfs merge=lfs -text
+Examples/** linguist-documentation

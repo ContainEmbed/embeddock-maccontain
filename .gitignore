@@ -1,11 +1,24 @@
 # macOS
 .DS_Store
+**/.DS_Store
 
 # Xcode / Swift
 .build/
 DerivedData/
 xcuserdata/
 .swiftpm/
+
+# SPM lockfile - libraries should not commit this
+Package.resolved
+
+# VM binaries (downloaded via scripts/download-resources.sh)
+Sources/EmbedDock/Resources/vminitd
+Sources/EmbedDock/Resources/vmexec
+Sources/EmbedDock/Resources/vmlinux
+Sources/EmbedDock/Resources/pre-init
+
+# Artifact bundle (build artifact, not committed)
+EmbedDockResources.artifactbundle/
 
 # Local binaries and build output
 *.o
@@ -19,6 +32,7 @@ xcuserdata/
 
 # Editor / IDE
 *.swp
+.vscode/
 
 # Runtime / logs
 *.pid
