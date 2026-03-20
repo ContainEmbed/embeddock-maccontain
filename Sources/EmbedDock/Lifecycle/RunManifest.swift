@@ -173,7 +173,7 @@ public actor RunManifest {
 
             // Write to a temp file first, then rename for atomicity.
             let tmp = manifestURL.appendingPathExtension("tmp")
-            try data.write(to: tmp, options: .atomic)
+            try data.write(to: tmp)
             _ = try FileManager.default.replaceItemAt(manifestURL, withItemAt: tmp)
         } catch {
             logger.warning("⚠️ [RunManifest] Failed to persist manifest: \(error.localizedDescription)")

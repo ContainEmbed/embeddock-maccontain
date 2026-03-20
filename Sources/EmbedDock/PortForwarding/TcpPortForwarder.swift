@@ -492,27 +492,40 @@ class TcpPortForwarder: ObservableObject {
     }
     
     private func waitForConnectionReady(_ connection: NWConnection, timeout: TimeInterval = 10.0) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            let resumeOnce = ResumableOnce()
-            
-            connection.stateUpdateHandler = { state in
-                switch state {
-                case .ready:
-                    if resumeOnce.tryResume() {
-                        continuation.resume()
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask {
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                    let resumeOnce = ResumableOnce()
+
+                    connection.stateUpdateHandler = { state in
+                        switch state {
+                        case .ready:
+                            if resumeOnce.tryResume() {
+                                continuation.resume()
+                            }
+                        case .failed(let error):
+                            if resumeOnce.tryResume() {
+                                continuation.resume(throwing: error)
+                            }
+                        case .cancelled:
+                            if resumeOnce.tryResume() {
+                                continuation.resume(throwing: ContainerizationError(.invalidState, message: "Connection cancelled"))
+                            }
+                        default:
+                            break
+                        }
                     }
-                case .failed(let error):
-                    if resumeOnce.tryResume() {
-                        continuation.resume(throwing: error)
-                    }
-                case .cancelled:
-                    if resumeOnce.tryResume() {
-                        continuation.resume(throwing: ContainerizationError(.invalidState, message: "Connection cancelled"))
-                    }
-                default:
-                    break
                 }
             }
+
+            group.addTask {
+                try await Task.sleep(for: .seconds(timeout))
+                throw ContainerizationError(.timeout, message: "Connection timed out after \(timeout)s")
+            }
+
+            // First task to complete wins; cancel the other.
+            try await group.next()
+            group.cancelAll()
         }
     }
     

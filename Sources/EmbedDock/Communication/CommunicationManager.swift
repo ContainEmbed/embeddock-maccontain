@@ -110,11 +110,18 @@ actor CommunicationManager {
 
     /// Remove all communication channels.
     func removeAllChannels() async throws {
+        var firstError: Error?
         for (type, channel) in channels {
-            try await channel.stop()
-            logger.info("🗑️ Stopped \(type.rawValue) channel")
+            do {
+                try await channel.stop()
+                logger.info("🗑️ Stopped \(type.rawValue) channel")
+            } catch {
+                logger.warning("⚠️ Failed to stop \(type.rawValue) channel: \(error)")
+                if firstError == nil { firstError = error }
+            }
         }
         channels.removeAll()
+        if let firstError { throw firstError }
     }
 
     // MARK: - Channel Access
