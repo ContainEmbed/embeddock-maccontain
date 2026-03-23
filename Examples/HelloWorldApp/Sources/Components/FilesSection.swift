@@ -35,20 +35,23 @@ struct FilesSection: View {
                         color: .blue,
                         action: { Task { await viewModel.browseDirectory("/") } }
                     )
-                    
+                    .disabled(!viewModel.isContainerOperational)
+
                     DirectoryButton(
                         path: "/app",
                         icon: "folder.badge.gearshape",
                         color: .purple,
                         action: { Task { await viewModel.browseDirectory("/app") } }
                     )
-                    
+                    .disabled(!viewModel.isContainerOperational)
+
                     DirectoryButton(
                         path: "/tmp",
                         icon: "folder.badge.questionmark",
                         color: .orange,
                         action: { Task { await viewModel.browseDirectory("/tmp") } }
                     )
+                    .disabled(!viewModel.isContainerOperational)
                 }
                 
                 Button(action: { Task { await viewModel.showProcesses() } }) {
@@ -63,7 +66,7 @@ struct FilesSection: View {
                     .cornerRadius(10)
                 }
                 .buttonStyle(.plain)
-                .disabled(viewModel.isExecutingCommand)
+                .disabled(viewModel.isExecutingCommand || !viewModel.isContainerOperational)
                 
                 HStack(spacing: 10) {
                     Button(action: viewBootLog) {

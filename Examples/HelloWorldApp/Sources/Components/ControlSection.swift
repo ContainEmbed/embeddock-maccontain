@@ -49,12 +49,12 @@ struct ControlSection: View {
                 }
                 .frame(maxWidth: .infinity)
                 .padding()
-                .background(viewModel.isRunning ? Color.green : Color.gray)
+                .background(viewModel.isContainerOperational ? Color.green : Color.gray)
                 .foregroundColor(.white)
                 .cornerRadius(10)
             }
             .buttonStyle(.plain)
-            .disabled(!viewModel.isRunning || viewModel.isCheckingAPI)
+            .disabled(!viewModel.isContainerOperational || viewModel.isCheckingAPI)
             
             // API Response Display
             if !viewModel.apiResponse.isEmpty {
@@ -65,16 +65,23 @@ struct ControlSection: View {
             if viewModel.isRunning {
                 Button(action: { Task { try? await viewModel.stopContainer() } }) {
                     HStack {
-                        Image(systemName: "stop.fill")
-                        Text("Stop Container")
+                        if viewModel.isStopping {
+                            ProgressView()
+                                .controlSize(.small)
+                                .colorScheme(.dark)
+                        } else {
+                            Image(systemName: "stop.fill")
+                        }
+                        Text(viewModel.isStopping ? "Stopping..." : "Stop Container")
                     }
                     .frame(maxWidth: .infinity)
                     .padding()
-                    .background(Color.red)
+                    .background(viewModel.isStopping ? Color.red.opacity(0.5) : Color.red)
                     .foregroundColor(.white)
                     .cornerRadius(10)
                 }
                 .buttonStyle(.plain)
+                .disabled(!viewModel.canStop)
             }
             
             // Settings button

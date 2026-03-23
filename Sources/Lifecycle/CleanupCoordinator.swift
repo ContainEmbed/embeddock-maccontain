@@ -95,25 +95,32 @@ actor CleanupCoordinator {
     ) async -> [CleanupResult] {
         logger.info("🧹 [CleanupCoordinator] Starting full cleanup sequence")
         var results: [CleanupResult] = []
-        
-        // Phase 1: Stop port forwarding (non-blocking, quick)
-        if let forwarder = portForwarder {
-            let result = await stopPortForwarder(forwarder, timeout: timeouts.portForwarder)
-            results.append(result)
+
+        // Phase 1+2: Stop port forwarder and communication concurrently.
+        // These are independent resources; running them in parallel saves
+        // up to min(portForwarder, communication) timeout seconds.
+        await withTaskGroup(of: CleanupResult?.self) { group in
+            if let forwarder = portForwarder {
+                group.addTask {
+                    await self.stopPortForwarder(forwarder, timeout: timeouts.portForwarder)
+                }
+            }
+            if let commManager = communicationManager {
+                group.addTask {
+                    await self.stopCommunication(commManager, timeout: timeouts.communication)
+                }
+            }
+            for await result in group {
+                if let r = result { results.append(r) }
+            }
         }
-        
-        // Phase 2: Disconnect communication (non-blocking, quick)
-        if let commManager = communicationManager {
-            let result = await stopCommunication(commManager, timeout: timeouts.communication)
-            results.append(result)
-        }
-        
-        // Phase 3: Stop pod (may take longer)
+
+        // Phase 3: Stop pod (must be last — depends on forwarding/comm being torn down)
         if let pod = pod {
             let result = await stopPod(pod, timeout: timeouts.pod)
             results.append(result)
         }
-        
+
         logCleanupSummary(results)
         return results
     }

@@ -106,40 +106,30 @@ actor ImageService {
         platform: Platform,
         onProgress: (@Sendable (String) -> Void)? = nil
     ) async throws -> URL {
-        logger.debug("🏗️ [ImageService] Starting rootfs preparation")
+        let startTime = ContinuousClock.now
         onProgress?("Preparing container rootfs...")
-        
+
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("HelloWorldApp-containers")
             .appendingPathComponent(UUID().uuidString)
-        
-        logger.debug("📂 [ImageService] Creating temp directory: \(tempDir.path)")
+
         try FileManager.default.createDirectory(
             at: tempDir,
             withIntermediateDirectories: true
         )
-        logger.debug("✅ [ImageService] Temp directory created")
-        
+
         onProgress?("Unpacking image layers...")
-        logger.debug("🔧 [ImageService] Creating EXT4 unpacker with 2 GiB block size")
         let unpacker = EXT4Unpacker(blockSizeInBytes: 2.gib())
-        
-        // Get manifest to determine image name
-        logger.debug("📋 [ImageService] Getting image index")
+
         _ = try await image.index()
         let name = image.reference.split(separator: "/").last.map(String.init) ?? "container"
-        logger.debug("🏷️ [ImageService] Image name: \(name)")
-        
         let rootfsURL = tempDir.appendingPathComponent("\(name).ext4")
-        logger.debug("📍 [ImageService] Rootfs will be created at: \(rootfsURL.path)")
-        
+
         onProgress?("Creating EXT4 filesystem...")
-        logger.info("📦 [ImageService] Unpacking image layers to EXT4...")
         let _ = try await unpacker.unpack(image, for: platform, at: rootfsURL)
-        logger.info("✅ [ImageService] EXT4 filesystem created")
-        
-        onProgress?("Rootfs ready at: \(rootfsURL.path)")
-        logger.info("✅ [ImageService] Rootfs preparation complete: \(rootfsURL.path)")
+
+        onProgress?("Rootfs ready")
+        logger.info("[ImageService] Rootfs prepared in \(ContinuousClock.now - startTime): \(rootfsURL.lastPathComponent)")
         return rootfsURL
     }
     

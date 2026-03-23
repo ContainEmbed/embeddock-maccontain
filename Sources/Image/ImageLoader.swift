@@ -51,28 +51,25 @@ actor ImageLoader {
         _ imageFile: URL,
         onProgress: (@Sendable (String) -> Void)? = nil
     ) async throws -> Containerization.Image {
-        logger.info("📦 [ImageLoader] Loading image from: \(imageFile.lastPathComponent)")
-        
+        let startTime = ContinuousClock.now
+
         // Create temp directory for extraction
         let tempExtractDir = workDir.appendingPathComponent("temp-\(UUID().uuidString)")
-        logger.debug("📂 [ImageLoader] Creating temp directory: \(tempExtractDir.path)")
-        
         try FileManager.default.createDirectory(at: tempExtractDir, withIntermediateDirectories: true)
-        
+
         defer {
-            logger.debug("🧹 [ImageLoader] Cleaning up temp directory")
             try? FileManager.default.removeItem(at: tempExtractDir)
         }
-        
+
         // Extract tar file
         onProgress?("Extracting OCI image...")
         try await extractTar(imageFile, to: tempExtractDir)
-        
+
         // Import into image store
         onProgress?("Importing container image...")
         let image = try await importFromDirectory(tempExtractDir)
-        
-        logger.info("✅ [ImageLoader] Image loaded: \(image.reference)")
+
+        logger.info("[ImageLoader] Loaded \(imageFile.lastPathComponent) in \(ContinuousClock.now - startTime)")
         return image
     }
     
@@ -92,31 +89,37 @@ actor ImageLoader {
     // MARK: - Private Helpers
     
     /// Extract a tar file to a directory.
+    ///
+    /// Uses `terminationHandler` instead of `waitUntilExit()` to avoid blocking
+    /// the cooperative thread pool while the tar process runs.
     private func extractTar(_ tarFile: URL, to directory: URL) async throws {
-        logger.info("📦 [ImageLoader] Extracting tar file using /usr/bin/tar")
-        
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
-        
+
         // Detect compression based on file extension
         let isCompressed = tarFile.pathExtension == "gz" || tarFile.pathExtension == "tgz"
         process.arguments = isCompressed ?
             ["-xzf", tarFile.path, "-C", directory.path] :
             ["-xf", tarFile.path, "-C", directory.path]
-        
-        logger.debug("🔧 [ImageLoader] Running: tar \(process.arguments!.joined(separator: " "))")
-        
-        try process.run()
-        process.waitUntilExit()
-        
-        logger.debug("📊 [ImageLoader] Tar process exit code: \(process.terminationStatus)")
-        
-        guard process.terminationStatus == 0 else {
-            logger.error("❌ [ImageLoader] Tar extraction failed with code \(process.terminationStatus)")
-            throw ContainerizationError(.internalError, message: "Failed to extract OCI image tar file")
+
+        logger.debug("[ImageLoader] Running: tar \(process.arguments!.joined(separator: " "))")
+
+        // Run the process asynchronously — yield the actor while tar executes.
+        let status = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Int32, Error>) in
+            process.terminationHandler = { proc in
+                continuation.resume(returning: proc.terminationStatus)
+            }
+            do {
+                try process.run()
+            } catch {
+                continuation.resume(throwing: error)
+            }
         }
-        
-        logger.info("✅ [ImageLoader] Tar extraction complete")
+
+        guard status == 0 else {
+            logger.error("[ImageLoader] Tar extraction failed with exit code \(status)")
+            throw ContainerizationError(.internalError, message: "Failed to extract OCI image tar file (exit code \(status))")
+        }
     }
     
     /// Import an image from an extracted OCI layout directory.

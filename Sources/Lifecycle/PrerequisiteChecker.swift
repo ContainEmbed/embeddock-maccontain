@@ -186,6 +186,35 @@ public struct PrerequisiteChecker: Sendable {
         FileManager.default.fileExists(atPath: getInitBlockPath().path)
     }
 
+    // MARK: - Host Directory Access
+
+    /// Verify that the host can access TCC-protected directories needed for VirtioFS mounts.
+    ///
+    /// On macOS, ~/Desktop is TCC-protected. This method triggers the system permission
+    /// prompt early and fails fast if access is denied, instead of hanging during
+    /// guest VirtioFS mount setup.
+    ///
+    /// - Parameter directoryName: The home subdirectory to check (default: "Desktop").
+    /// - Throws: `ContainerizationError(.invalidArgument)` if access is denied.
+    public func checkHostDirectoryAccess(directoryName: String = "Desktop") throws {
+        let hostSharePath = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(directoryName).path
+        let hostShareURL = URL(fileURLWithPath: hostSharePath)
+
+        do {
+            _ = try FileManager.default.contentsOfDirectory(
+                at: hostShareURL, includingPropertiesForKeys: nil
+            )
+            logger.debug("[PrerequisiteChecker] Host directory access verified: \(hostSharePath)")
+        } catch {
+            logger.error("[PrerequisiteChecker] Cannot access host directory: \(hostSharePath) — \(error.localizedDescription)")
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "Cannot access \(hostSharePath). Grant Desktop access in System Settings > Privacy & Security > Files and Folders."
+            )
+        }
+    }
+
     #if os(macOS)
     // MARK: - Virtualization Readiness Checks
 

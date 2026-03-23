@@ -45,7 +45,7 @@ struct TerminalSection: View {
                             .cornerRadius(6)
                     }
                     .buttonStyle(.borderless)
-                    .disabled(viewModel.isExecutingCommand || viewModel.commandInput.isEmpty)
+                    .disabled(viewModel.isExecutingCommand || viewModel.commandInput.isEmpty || !viewModel.isContainerOperational)
                 }
                 
                 // Quick command buttons
@@ -90,7 +90,7 @@ struct TerminalSection: View {
             .cornerRadius(4)
         }
         .buttonStyle(.plain)
-        .disabled(viewModel.isExecutingCommand)
+        .disabled(viewModel.isExecutingCommand || !viewModel.isContainerOperational)
     }
     
     // MARK: - Actions

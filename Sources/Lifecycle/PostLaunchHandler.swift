@@ -85,54 +85,40 @@ final class PostLaunchHandler {
 
     /// Perform all post-launch steps and return the result.
     ///
+    /// Optimization E: Health check, communication setup, and port forwarding
+    /// now run in parallel instead of sequentially. Only ContainerOperations
+    /// wiring must wait for communication setup.
+    ///
     /// - Parameters:
     ///   - pod: The started LinuxPod.
     ///   - options: Configuration for the post-launch phase.
     /// - Returns: A `PostLaunchResult` with all resources and status.
     func handle(pod: LinuxPod, options: PostLaunchOptions) async -> PostLaunchResult {
+        let startTime = ContinuousClock.now
         let port = options.port
-        var isHealthy = true
-        var healthWarning: String?
 
-        // 1. HTTP health check (OCI image path only)
-        if options.performHealthCheck {
-            logger.info("🩺 [PostLaunchHandler] Starting health check on port \(port)...")
-            let httpResponding = await diagnosticsHelper.testHTTPResponseWithRetry(pod: pod, port: port)
-            if !httpResponding {
-                // Gather extra context so the user knows exactly what went wrong.
-                let portListening = await diagnosticsHelper.isPortListening(
-                    pod: pod, containerID: "main", port: port
-                )
-                if portListening {
-                    logger.warning("⚠️ [PostLaunchHandler] Port \(port) is listening but HTTP probe failed (no curl/wget, or non-HTTP service)")
-                    // The server IS up — it just didn't respond to our probe tool.
-                    // Treat as healthy with a soft warning so port-forwarding still works.
-                    isHealthy = true
-                    healthWarning = nil
-                    logger.info("✅ [PostLaunchHandler] Port \(port) confirmed listening — treating as healthy")
-                } else {
-                    logger.warning("⚠️ [PostLaunchHandler] HTTP server not responding and port \(port) not listening")
-                    isHealthy = false
-                    healthWarning = "HTTP not responding on port \(port) — the server may still be starting or the image may not expose this port"
-                }
-            }
-        }
+        // ── Fire all three independent operations in parallel ────────────
+        async let healthResult = performHealthCheck(
+            pod: pod, port: port, enabled: options.performHealthCheck
+        )
+        async let commResult = setupCommunication(pod: pod, port: port)
+        async let forwardingResult = setupPortForwarding(pod: pod, port: port)
 
-        // 2. Communication setup
-        let (commManager, commReady) = await setupCommunication(pod: pod, port: port)
+        // Wait for communication first (needed for wiring ContainerOperations)
+        let (commManager, commReady) = await commResult
 
-        // 3. Wire container operations
+        // Wire container operations (synchronous, depends on commManager)
         containerOperations.configure(
             pod: pod,
             communicationManager: commManager,
             diagnosticsHelper: diagnosticsHelper
         )
 
-        // 4. Port forwarding
-        let (forwarder, forwardingStatus, containerURL) = await setupPortForwarding(
-            pod: pod,
-            port: port
-        )
+        // Await remaining parallel results
+        let (isHealthy, healthWarning) = await healthResult
+        let (forwarder, forwardingStatus, containerURL) = await forwardingResult
+
+        logger.info("[PostLaunchHandler] Post-launch completed in \(ContinuousClock.now - startTime) (healthy=\(isHealthy), comm=\(commReady), forwarding=\(forwardingStatus))")
 
         return PostLaunchResult(
             communicationManager: commManager,
@@ -148,6 +134,36 @@ final class PostLaunchHandler {
 
     // MARK: - Private Steps
 
+    /// Perform HTTP health check if enabled.
+    private func performHealthCheck(
+        pod: LinuxPod,
+        port: Int,
+        enabled: Bool
+    ) async -> (Bool, String?) {
+        guard enabled else {
+            return (true, nil)
+        }
+
+        let httpResponding = await diagnosticsHelper.testHTTPResponseWithRetry(pod: pod, port: port)
+
+        if httpResponding {
+            return (true, nil)
+        }
+
+        // HTTP probe failed — check if port is at least listening
+        let portListening = await diagnosticsHelper.isPortListening(
+            pod: pod, containerID: "main", port: port
+        )
+
+        if portListening {
+            logger.debug("[PostLaunchHandler] Port \(port) listening but HTTP probe failed — treating as healthy")
+            return (true, nil)
+        }
+
+        logger.warning("[PostLaunchHandler] Port \(port) not listening after startup")
+        return (false, "HTTP not responding on port \(port) — the server may still be starting or the image may not expose this port")
+    }
+
     /// Creates a CommunicationManager and sets up HTTP communication.
     private func setupCommunication(
         pod: LinuxPod,
@@ -159,9 +175,8 @@ final class PostLaunchHandler {
         do {
             _ = try await commManager.setupHTTPCommunication(port: port)
             isReady = true
-            logger.info("✅ [PostLaunchHandler] Communication layer ready")
         } catch {
-            logger.warning("⚠️ [PostLaunchHandler] Communication layer setup failed: \(error)")
+            logger.warning("[PostLaunchHandler] Communication setup failed: \(error.localizedDescription)")
         }
 
         return (commManager, isReady)
@@ -181,10 +196,9 @@ final class PostLaunchHandler {
 
         do {
             try await forwarder.start()
-            logger.info("✅ [PostLaunchHandler] Port forwarding active on localhost:\(port)")
             return (forwarder, forwarder.status, "http://localhost:\(port)")
         } catch {
-            logger.warning("⚠️ [PostLaunchHandler] Port forwarding setup failed: \(error)")
+            logger.warning("[PostLaunchHandler] Port forwarding failed: \(error.localizedDescription)")
             return (nil, .error(error.localizedDescription), "http://localhost:\(port)")
         }
     }

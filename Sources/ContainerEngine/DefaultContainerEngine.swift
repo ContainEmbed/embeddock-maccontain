@@ -132,6 +132,7 @@ final class DefaultContainerEngine: ContainerEngine {
             podFactory: podFactory!,
             imageStore: imageStore!,
             diagnosticsHelper: diagnosticsHelper!,
+            prerequisiteChecker: prerequisiteChecker!,
             logger: logger
         )
 
@@ -140,6 +141,7 @@ final class DefaultContainerEngine: ContainerEngine {
             podFactory: podFactory!,
             imageStore: imageStore!,
             diagnosticsHelper: diagnosticsHelper!,
+            prerequisiteChecker: prerequisiteChecker!,
             workDir: workDir,
             logger: logger
         )
@@ -209,6 +211,12 @@ final class DefaultContainerEngine: ContainerEngine {
     }
 
     func stop() async throws {
+        // Guard against re-entrant calls (double-tap, Cmd+Q during manual stop).
+        guard status != .stopping else {
+            logger.debug("[Engine] stop() called while already stopping — ignoring")
+            return
+        }
+
         guard let pod = currentPod else {
             forceClearState()
             return
@@ -553,8 +561,24 @@ final class DefaultContainerEngine: ContainerEngine {
     }
 
     private func cleanupOnFailure() {
-        if status.canStart {
-            Task { try? await self.currentPod?.stop(); self.currentPod = nil }
+        // Only clean up if status indicates a failure (canStart means idle or failed).
+        guard status.canStart else { return }
+
+        // Use the full cleanup flow to tear down portForwarder, communicationManager,
+        // and pod — not just the pod alone.
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            if let coordinator = self.cleanupCoordinator {
+                await coordinator.performFullCleanup(
+                    pod: self.currentPod,
+                    portForwarder: self.portForwarder,
+                    communicationManager: self.communicationManager,
+                    timeouts: .aggressive
+                )
+            } else {
+                try? await self.currentPod?.stop()
+            }
+            self.forceClearState()
         }
     }
 }

@@ -61,6 +61,13 @@ final class ContainerViewModel: ObservableObject {
     var canStart: Bool { status.canStart }
     var canStop: Bool { status.canStop }
 
+    /// True only when the container is in the `.stopping` state.
+    var isStopping: Bool { status == .stopping }
+
+    /// True only when the container is actively running (not stopping or initializing).
+    /// Use for operations that require a live container (API calls, terminal, files).
+    var isContainerOperational: Bool { status.isRunning }
+
     var portForwardingDescription: String {
         status.forwardingState?.description ?? "Inactive"
     }
