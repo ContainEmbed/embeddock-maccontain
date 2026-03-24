@@ -25,6 +25,9 @@ struct ResourceMonitoringSection: View {
 
     var body: some View {
         VStack(spacing: 15) {
+            // Resource configuration (always visible)
+            ResourceConfigurationSection(viewModel: viewModel)
+
             if let snapshot = viewModel.latestSnapshot, viewModel.isMonitoringResources {
                 // Quality badge
                 HStack {
@@ -38,7 +41,6 @@ struct ResourceMonitoringSection: View {
                 MemoryMetricsCard(memory: snapshot.memory, history: viewModel.memoryHistory)
                 NetworkMetricsCard(network: snapshot.network)
                 DiskIOMetricsCard(diskIO: snapshot.diskIO)
-                GPUMetricsCard(gpu: snapshot.gpu)
             } else {
                 monitoringInactivePlaceholder
             }
@@ -80,8 +82,8 @@ struct CPUMetricsCard: View {
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(.secondary)
                 Spacer()
-                Text("\(cpu.coreCount) cores")
-                    .font(.system(size: 11))
+                Text("Max: \(cpu.coreCount) cores (\(Int(Double(cpu.coreCount) * 100))%)")
+                    .font(.system(size: 11, design: .monospaced))
                     .foregroundColor(.secondary)
             }
 
@@ -95,7 +97,8 @@ struct CPUMetricsCard: View {
                 SparklineView(
                     data: history,
                     lineColor: progressColor(for: cpu.usagePercent / Double(max(cpu.coreCount, 1))),
-                    height: 40
+                    height: 40,
+                    maxValue: Double(cpu.coreCount) * 100.0
                 )
             }
 
@@ -147,7 +150,7 @@ struct MemoryMetricsCard: View {
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(.secondary)
                 Spacer()
-                Text("\(formatBytes(memory.usageBytes)) / \(formatBytes(memory.totalBytes))")
+                Text("\(formatBytes(memory.usageBytes)) / \(formatBytes(memory.totalBytes)) (Max)")
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundColor(.secondary)
             }
@@ -159,7 +162,7 @@ struct MemoryMetricsCard: View {
             )
 
             if !history.isEmpty {
-                SparklineView(data: history, lineColor: progressColor(for: memory.usagePercent), height: 40)
+                SparklineView(data: history, lineColor: progressColor(for: memory.usagePercent), height: 40, maxValue: 100.0)
             }
 
             // Detailed breakdown
@@ -318,58 +321,6 @@ struct DiskIOMetricsCard: View {
     }
 }
 
-// MARK: - GPU Metrics Card
-
-struct GPUMetricsCard: View {
-    let gpu: GPUMetrics
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Image(systemName: "gpu")
-                    .foregroundColor(.pink)
-                Text("GPU")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(.secondary)
-                Spacer()
-            }
-
-            if gpu.isAvailable {
-                MetricProgressBar(
-                    value: gpu.utilizationPercent,
-                    label: "Utilization",
-                    maxValue: 100.0
-                )
-
-                HStack(spacing: 16) {
-                    MetricLabel(
-                        title: "VRAM",
-                        value: "\(formatBytes(gpu.memoryUsageBytes)) / \(formatBytes(gpu.memoryTotalBytes))"
-                    )
-                    if let temp = gpu.temperatureCelsius {
-                        MetricLabel(title: "Temp", value: String(format: "%.0f °C", temp))
-                    }
-                    if let power = gpu.powerWatts {
-                        MetricLabel(title: "Power", value: String(format: "%.1f W", power))
-                    }
-                }
-            } else {
-                HStack {
-                    Image(systemName: "exclamationmark.triangle")
-                        .font(.system(size: 10))
-                        .foregroundColor(.secondary)
-                    Text("GPU monitoring not available")
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
-                }
-            }
-        }
-        .padding()
-        .background(Color.white.opacity(0.8))
-        .cornerRadius(10)
-    }
-}
-
 // MARK: - Snapshot Quality Badge
 
 struct SnapshotQualityBadge: View {
@@ -420,11 +371,12 @@ struct SparklineView: View {
     let data: [Double]
     let lineColor: Color
     let height: CGFloat
+    var maxValue: Double? = nil
 
     var body: some View {
         GeometryReader { geo in
             if data.count > 1 {
-                let maxVal = max(data.max() ?? 1.0, 1.0)
+                let maxVal = max(maxValue ?? data.max() ?? 1.0, 1.0)
                 Path { path in
                     let stepX = geo.size.width / CGFloat(data.count - 1)
                     for (index, value) in data.enumerated() {

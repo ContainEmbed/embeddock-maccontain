@@ -66,7 +66,12 @@ struct ContentView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .sheet(isPresented: $viewModel.showSettings) {
-            SettingsView(imageName: $viewModel.imageName, port: $viewModel.port)
+            SettingsView(
+                imageName: $viewModel.imageName,
+                port: $viewModel.port,
+                cpuCores: $viewModel.configuredCpuCores,
+                memoryMB: $viewModel.configuredMemoryMB
+            )
         }
         .task {
             await viewModel.initialize()

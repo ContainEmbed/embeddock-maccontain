@@ -26,6 +26,12 @@ public protocol ContainerLifecycle: AnyObject {
     /// Convenience — `true` when the engine is in any active state.
     var isRunning: Bool { get }
 
+    /// Resource limits to use for the next container start.
+    ///
+    /// Set this before calling `startFromImage` or `startNodeServer`.
+    /// Changes to a running container require a stop-and-restart cycle.
+    var resourceLimits: ContainerResourceLimits { get set }
+
     /// One-time setup: image store, event loop, composition modules.
     func initialize() async throws
 

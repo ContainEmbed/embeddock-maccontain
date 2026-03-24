@@ -19,6 +19,12 @@ public protocol ContainerResourceMonitoring {
     /// Whether resource monitoring is currently active.
     var isMonitoringResources: Bool { get }
 
+    /// The resource limits of the currently running container, if any.
+    ///
+    /// Returns `nil` when no container is running. When a container is active,
+    /// reflects the actual CPU and memory allocation used during VM creation.
+    var activeResourceLimits: ContainerResourceLimits? { get }
+
     /// The most recent resource snapshot, if monitoring is active.
     var latestResourceSnapshot: ResourceSnapshot? { get }
 

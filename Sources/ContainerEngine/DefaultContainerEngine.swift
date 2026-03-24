@@ -39,6 +39,9 @@ final class DefaultContainerEngine: ContainerEngine {
     /// True for ANY active state (initializing, running, stopping).
     var isRunning: Bool { status.isActive }
 
+    /// Resource limits to use for the next container start.
+    var resourceLimits: ContainerResourceLimits = .default
+
     // MARK: - ContainerDiagnosing — State
 
     private(set) var lastDiagnosticReport: DiagnosticReport?
@@ -63,6 +66,7 @@ final class DefaultContainerEngine: ContainerEngine {
     // MARK: - ContainerResourceMonitoring — State
 
     private(set) var isMonitoringResources: Bool = false
+    private(set) var activeResourceLimits: ContainerResourceLimits?
     private(set) var latestResourceSnapshot: ResourceSnapshot?
     private var _resourceSnapshotStream: AsyncStream<ResourceSnapshot>?
 
@@ -183,12 +187,14 @@ final class DefaultContainerEngine: ContainerEngine {
         try await ensureStoppedIfRunning()
         try checkPrerequisites()
 
+        let podConfig = resourceLimits.toPodConfiguration()
         updateStatus(.initializing(step: .extractingImage))
         defer { cleanupOnFailure() }
 
         do {
-            let pod = try await launchFromImage(imageFile: imageFile, port: port)
+            let pod = try await launchFromImage(imageFile: imageFile, port: port, podConfig: podConfig)
             self.currentPod = pod
+            self.activeResourceLimits = resourceLimits
             updateStatus(.running(health: .healthy, forwarding: .inactive))
 
             let result = await performPostLaunch(pod: pod, options: .imageStart(port: port))
@@ -206,12 +212,14 @@ final class DefaultContainerEngine: ContainerEngine {
 
         try checkPrerequisites()
 
+        let podConfig = resourceLimits.toPodConfiguration()
         updateStatus(.initializing(step: .extractingImage))
         defer { cleanupOnFailure() }
 
         do {
-            let pod = try await launchNodeServer(jsFile: jsFile, imageName: imageName, port: port)
+            let pod = try await launchNodeServer(jsFile: jsFile, imageName: imageName, port: port, podConfig: podConfig)
             self.currentPod = pod
+            self.activeResourceLimits = resourceLimits
             updateStatus(.running(health: .healthy, forwarding: .inactive))
 
             let result = await performPostLaunch(pod: pod, options: .nodeServer(port: port))
@@ -428,8 +436,8 @@ final class DefaultContainerEngine: ContainerEngine {
             await existing.stop()
         }
 
-        let coreCount = PodConfiguration.default.cpus
-        let totalMemory = PodConfiguration.default.memoryInBytes
+        let coreCount = activeResourceLimits?.cpuCores ?? ContainerResourceLimits.default.cpuCores
+        let totalMemory = activeResourceLimits?.memoryBytes ?? ContainerResourceLimits.default.memoryBytes
 
         let monitor = ResourceMonitor(
             pod: pod,
@@ -506,6 +514,7 @@ final class DefaultContainerEngine: ContainerEngine {
         containerOperations?.configure(pod: nil, communicationManager: nil, diagnosticsHelper: nil)
         containerURL = nil
         isCommunicationReady = false
+        activeResourceLimits = nil
 
         // Clear resource monitoring state (non-async best-effort)
         if let monitor = resourceMonitor {
@@ -584,20 +593,20 @@ final class DefaultContainerEngine: ContainerEngine {
         }
     }
 
-    private func launchFromImage(imageFile: URL, port: Int) async throws -> LinuxPod {
+    private func launchFromImage(imageFile: URL, port: Int, podConfig: PodConfiguration) async throws -> LinuxPod {
         guard let coordinator = startupCoordinator else {
             throw ContainerizationError(.notFound, message: "Startup coordinator not initialized")
         }
         coordinator.onProgress = { [weak self] msg in self?.reportProgress(msg) }
-        return try await coordinator.startFromImage(imageFile: imageFile, port: port)
+        return try await coordinator.startFromImage(imageFile: imageFile, port: port, podConfig: podConfig)
     }
 
-    private func launchNodeServer(jsFile: URL, imageName: String, port: Int) async throws -> LinuxPod {
+    private func launchNodeServer(jsFile: URL, imageName: String, port: Int, podConfig: PodConfiguration) async throws -> LinuxPod {
         guard let coordinator = nodeServerCoordinator else {
             throw ContainerizationError(.notFound, message: "Node server coordinator not initialized")
         }
         coordinator.onProgress = { [weak self] msg in self?.reportProgress(msg) }
-        return try await coordinator.start(jsFile: jsFile, imageName: imageName, port: port)
+        return try await coordinator.start(jsFile: jsFile, imageName: imageName, port: port, podConfig: podConfig)
     }
 
     private func performPostLaunch(pod: LinuxPod, options: PostLaunchOptions) async -> PostLaunchResult {
@@ -636,6 +645,11 @@ final class DefaultContainerEngine: ContainerEngine {
         // Auto-start resource monitoring once the container is running
         Task {
             try? await self.startResourceMonitoring()
+        }
+
+        // Notify delegate of the active resource limits
+        if let limits = activeResourceLimits {
+            delegate?.engine(self, didUpdateResourceLimits: limits)
         }
 
         notifyDelegate()

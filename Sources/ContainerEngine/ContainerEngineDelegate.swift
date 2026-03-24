@@ -28,6 +28,9 @@ public protocol ContainerEngineDelegate: AnyObject {
 
     /// Called on each resource monitoring collection cycle with the latest snapshot.
     func engine(_ engine: any ContainerEngine, didUpdateResourceSnapshot snapshot: ResourceSnapshot)
+
+    /// Called when the active resource limits change (e.g., after start or restart with new limits).
+    func engine(_ engine: any ContainerEngine, didUpdateResourceLimits limits: ContainerResourceLimits)
 }
 
 // MARK: - Default Implementations
@@ -36,4 +39,7 @@ public extension ContainerEngineDelegate {
 
     /// Default no-op so existing delegates are not broken.
     func engine(_ engine: any ContainerEngine, didUpdateResourceSnapshot snapshot: ResourceSnapshot) {}
+
+    /// Default no-op so existing delegates are not broken.
+    func engine(_ engine: any ContainerEngine, didUpdateResourceLimits limits: ContainerResourceLimits) {}
 }

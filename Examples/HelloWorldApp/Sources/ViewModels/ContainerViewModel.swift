@@ -51,6 +51,24 @@ final class ContainerViewModel: ObservableObject {
     @Published private(set) var networkRxHistory: [Double] = []
     @Published private(set) var networkTxHistory: [Double] = []
 
+    // MARK: - Resource Configuration State
+
+    /// User-configurable CPU cores for the next container start.
+    @Published var configuredCpuCores: Int = 2
+
+    /// User-configurable memory (in MB) for the next container start.
+    @Published var configuredMemoryMB: Int = 512
+
+    /// The active resource limits of the currently running container.
+    @Published private(set) var activeResourceLimits: ContainerResourceLimits?
+
+    /// Whether the user has changed resource limits from the active allocation.
+    var hasUnsavedResourceChanges: Bool {
+        guard let active = activeResourceLimits else { return false }
+        return active.cpuCores != configuredCpuCores ||
+               active.memoryBytes != UInt64(configuredMemoryMB) * 1024 * 1024
+    }
+
     // MARK: - UI State
 
     @Published var showSettings = false
@@ -116,6 +134,13 @@ final class ContainerViewModel: ObservableObject {
 
     let engine: any ContainerEngine
 
+    /// Tracks how the container was last launched, for restart-with-new-limits.
+    private enum LastLaunchMode {
+        case image(file: URL)
+        case nodeServer(jsFile: URL)
+    }
+    private var lastLaunchMode: LastLaunchMode?
+
     // MARK: - Initialization
 
     init(engine: (any ContainerEngine)? = nil) {
@@ -139,16 +164,41 @@ final class ContainerViewModel: ObservableObject {
 
     func startContainerFromImage(imageFile: URL) async throws {
         let targetPort = Int(port) ?? 3000
+        engine.resourceLimits = ContainerResourceLimits(
+            cpuCores: configuredCpuCores,
+            memoryBytes: UInt64(configuredMemoryMB) * 1024 * 1024
+        )
+        lastLaunchMode = .image(file: imageFile)
         try await engine.startFromImage(imageFile: imageFile, port: targetPort)
     }
 
     func startNodeServer(jsFile: URL) async throws {
         let targetPort = Int(port) ?? 3000
+        engine.resourceLimits = ContainerResourceLimits(
+            cpuCores: configuredCpuCores,
+            memoryBytes: UInt64(configuredMemoryMB) * 1024 * 1024
+        )
+        lastLaunchMode = .nodeServer(jsFile: jsFile)
         try await engine.startNodeServer(jsFile: jsFile, imageName: imageName, port: targetPort)
     }
 
     func stopContainer() async throws {
         try await engine.stop()
+    }
+
+    /// Apply new resource limits by stopping and restarting the container.
+    ///
+    /// Apple's Virtualization Framework does not support live resource
+    /// modification, so changing limits requires a full restart.
+    func applyResourceLimitsAndRestart() async throws {
+        guard let launchMode = lastLaunchMode else { return }
+        try await stopContainer()
+        switch launchMode {
+        case .image(let file):
+            try await startContainerFromImage(imageFile: file)
+        case .nodeServer(let jsFile):
+            try await startNodeServer(jsFile: jsFile)
+        }
     }
 
     func executeCommand(_ command: [String], workingDirectory: String? = nil) async throws -> ExecResult {
@@ -402,7 +452,7 @@ extension ContainerViewModel: ContainerEngineDelegate {
             activeChannels = []
         }
 
-        // Clear resource monitoring state when container is no longer active
+        // Clear resource monitoring and resource limits state when container is no longer active
         if !engine.status.isActive {
             latestSnapshot = nil
             isMonitoringResources = false
@@ -410,6 +460,7 @@ extension ContainerViewModel: ContainerEngineDelegate {
             memoryHistory = []
             networkRxHistory = []
             networkTxHistory = []
+            activeResourceLimits = nil
         }
     }
 
@@ -429,6 +480,12 @@ extension ContainerViewModel: ContainerEngineDelegate {
         appendToHistory(&memoryHistory, value: snapshot.memory.usagePercent, maxCount: 60)
         appendToHistory(&networkRxHistory, value: snapshot.network.totalRxBytesPerSec, maxCount: 60)
         appendToHistory(&networkTxHistory, value: snapshot.network.totalTxBytesPerSec, maxCount: 60)
+    }
+
+    func engine(_ engine: any ContainerEngine, didUpdateResourceLimits limits: ContainerResourceLimits) {
+        activeResourceLimits = limits
+        configuredCpuCores = limits.cpuCores
+        configuredMemoryMB = Int(limits.memoryBytes / (1024 * 1024))
     }
 
     // MARK: - Private Helpers

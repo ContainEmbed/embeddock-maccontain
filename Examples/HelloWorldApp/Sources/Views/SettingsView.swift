@@ -22,30 +22,42 @@ import SwiftUI
 struct SettingsView: View {
     @Binding var imageName: String
     @Binding var port: String
+    @Binding var cpuCores: Int
+    @Binding var memoryMB: Int
     @Environment(\.dismiss) var dismiss
-    
+
     var body: some View {
         VStack(spacing: 20) {
             Text("Settings")
                 .font(.title)
                 .padding(.top)
-            
+
             Form {
                 TextField("Container Image", text: $imageName)
                     .textFieldStyle(.roundedBorder)
-                
+
                 TextField("Port", text: $port)
                     .textFieldStyle(.roundedBorder)
+
+                Stepper("CPU Cores: \(cpuCores)", value: $cpuCores, in: 1...8)
+
+                Picker("Memory", selection: $memoryMB) {
+                    Text("256 MB").tag(256)
+                    Text("512 MB").tag(512)
+                    Text("1 GB").tag(1024)
+                    Text("2 GB").tag(2048)
+                    Text("4 GB").tag(4096)
+                }
             }
             .padding()
-            
+
             Button("Done") {
                 dismiss()
             }
             .keyboardShortcut(.defaultAction)
             .padding(.bottom)
         }
-        .frame(width: 400, height: 250)
+        .frame(width: 400, height: 320)
     }
 }
 
@@ -56,7 +68,9 @@ struct SettingsView_Previews: PreviewProvider {
     static var previews: some View {
         SettingsView(
             imageName: .constant("node:20-alpine"),
-            port: .constant("3000")
+            port: .constant("3000"),
+            cpuCores: .constant(2),
+            memoryMB: .constant(512)
         )
     }
 }

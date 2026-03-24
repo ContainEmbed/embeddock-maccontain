@@ -77,7 +77,7 @@ final class StartupCoordinator {
     ///   - imageFile: Path to the OCI image tar file.
     ///   - port: Port the container application listens on.
     /// - Returns: The started LinuxPod instance.
-    func startFromImage(imageFile: URL, port: Int) async throws -> LinuxPod {
+    func startFromImage(imageFile: URL, port: Int, podConfig: PodConfiguration = .default) async throws -> LinuxPod {
         let startTime = ContinuousClock.now
         logger.info("[StartupCoordinator] Starting container from: \(imageFile.lastPathComponent)")
         let platform = Platform(arch: "arm64", os: "linux", variant: "v8")
@@ -95,7 +95,7 @@ final class StartupCoordinator {
         async let imageTrackResult = performImageTrack(
             imageFile: imageFile, platform: platform
         )
-        async let vmTrackResult = performVMTrack()
+        async let vmTrackResult = performVMTrack(podConfig: podConfig)
 
         // Await VM track first — typically faster when init.block is cached.
         // If it succeeds and image track later fails, we must clean up the pod.
@@ -188,12 +188,12 @@ final class StartupCoordinator {
     /// Implements Optimizations A and C:
     /// - A: Init filesystem preparation starts immediately (no image dependency)
     /// - C: VM creation (kernel + VMM + pod) starts before rootfs is ready
-    private func performVMTrack() async throws -> LinuxPod {
+    private func performVMTrack(podConfig: PodConfiguration) async throws -> LinuxPod {
         let trackStart = ContinuousClock.now
 
         let initfs = try await podFactory.prepareInitFilesystem()
         let podID = "container-\(UUID().uuidString.prefix(8))"
-        let pod = try await podFactory.createPod(podID: podID, initfs: initfs)
+        let pod = try await podFactory.createPod(podID: podID, initfs: initfs, config: podConfig)
 
         logger.info("[StartupCoordinator:VMTrack] Completed in \(ContinuousClock.now - trackStart)")
         return pod

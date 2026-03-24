@@ -14,9 +14,8 @@ let package = Package(
     name: "HelloWorldApp",
     platforms: [.macOS("15")],
     dependencies: [
-        // For local development, uncomment the line below and comment the URL dependency:
-        // .package(path: "../../"),
-        .package(url: "https://github.com/ContainEmbed/embeddock-maccontain.git", from: "0.2.0"),
+        // Local development — uses the EmbedDock package from this repository.
+        .package(path: "../../"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.0.0"),
     ],
     targets: [

@@ -1,8 +1,74 @@
-# Resource Monitoring UI Components
+# Resource Monitoring & Configuration UI Components
 
 ## Overview
 
-This document describes the SwiftUI UI components added to the HelloWorldApp example to visualize real-time container resource metrics from the `ResourceMonitoring` module. The resource monitoring system collects CPU, memory, network I/O, disk I/O, and GPU metrics from running containers at configurable intervals (default 2s) via `ContainerResourceMonitoring` protocol.
+This document describes the SwiftUI UI components added to the HelloWorldApp example for:
+1. **Resource Configuration** — Setting CPU and memory limits before starting a container, viewing active allocation, and changing limits (with restart) while running.
+2. **Resource Monitoring** — Visualizing real-time container resource metrics from the `ResourceMonitoring` module.
+
+---
+
+## Resource Configuration
+
+### `ContainerResourceLimits` (Public API)
+
+```swift
+public struct ContainerResourceLimits: Sendable, Equatable {
+    public let cpuCores: Int       // >= 1, default: 2
+    public let memoryBytes: UInt64 // >= 128 MiB, default: 512 MiB
+
+    public static let `default`     // 2 cores, 512 MiB
+    public static let minimal       // 1 core, 256 MiB
+    public static let performance   // 4 cores, 1 GiB
+}
+```
+
+Set `engine.resourceLimits` before calling `startFromImage()` or `startNodeServer()`. The engine converts this to the internal `PodConfiguration` for VM creation.
+
+### Apple Virtualization Framework Constraint
+
+CPU count and memory are fixed at VM creation time. **Changing resource limits requires stopping the container and restarting with a new VM.** The UI communicates this with an "Apply Changes (Restart Required)" button.
+
+### Configuration Data Flow
+
+```
+ResourceConfigurationSection (SwiftUI)
+    ├─ CPUConfigurationCard    ──writes──> viewModel.configuredCpuCores
+    ├─ MemoryConfigurationCard ──writes──> viewModel.configuredMemoryMB
+    └─ RestartButton           ──calls──> viewModel.applyResourceLimitsAndRestart()
+
+ContainerViewModel
+    ├─ Converts configuredCpuCores/memoryMB → ContainerResourceLimits
+    ├─ Sets engine.resourceLimits before calling engine.startFromImage()
+    └─ Receives activeResourceLimits via delegate callback
+
+DefaultContainerEngine
+    ├─ Converts ContainerResourceLimits → PodConfiguration (internal)
+    ├─ Threads config through StartupCoordinator → PodFactory
+    └─ Uses activeResourceLimits for resource monitoring scaling
+```
+
+### Configuration State Lifecycle
+
+| Event | ViewModel Action | UI Effect |
+|---|---|---|
+| App launch | configuredCpuCores=2, configuredMemoryMB=512 | Config cards show defaults |
+| User adjusts CPU/Memory | Published properties update | Card reflects new value |
+| User starts container | Limits passed to engine via `engine.resourceLimits` | Active allocation badge appears |
+| User changes limits while running | `hasUnsavedResourceChanges` becomes true | "Apply (Restart)" button appears |
+| User clicks Apply | `applyResourceLimitsAndRestart()` stops/restarts | Brief stop, new allocation shown |
+| Container stops | `activeResourceLimits` = nil | Active badge disappears |
+
+### New File: `Sources/Components/ResourceConfigurationSection.swift`
+
+- **CPU card**: Stepper (1–8 cores), large monospaced value display
+- **Memory card**: Picker with presets (256 MB, 512 MB, 1 GB, 2 GB, 4 GB)
+- **Active allocation badge**: Green dot + "Active: N cores | X MB" when running
+- **Restart button**: Orange "Apply Changes (Restart Required)" when limits differ from active
+
+### Settings View Enhancement
+
+`SettingsView` now accepts `cpuCores` and `memoryMB` bindings, providing a pre-start configuration path alongside the Resources tab.
 
 ---
 
@@ -30,7 +96,6 @@ ContainerViewModel (ViewModel)
         ├─ MemoryMetricsCard
         ├─ NetworkMetricsCard
         ├─ DiskIOMetricsCard
-        ├─ GPUMetricsCard (placeholder when unavailable)
         └─ SnapshotQualityBadge
 ```
 
@@ -59,19 +124,20 @@ The main container view for the monitoring tab. Contains all metric cards arrang
 #### `CPUMetricsCard`
 - **Input**: `cpu: CPUMetrics`, `history: [Double]`
 - **Displays**:
-  - Overall CPU usage as a percentage with a progress bar
+  - Max allocated CPU cores and total percentage capacity (e.g., "Max: 2 cores (200%)")
+  - Overall CPU usage as a percentage with a progress bar (0 to max allocated)
   - Per-core usage bars (when `perCoreUsagePercent` is available)
   - User / System / Idle breakdown
-  - Mini sparkline chart from history array
+  - Mini sparkline chart scaled from 0 to max allocated (coreCount × 100%)
 
 #### `MemoryMetricsCard`
 - **Input**: `memory: MemoryMetrics`, `history: [Double]`
 - **Displays**:
-  - Usage percentage with progress bar
-  - Used / Total bytes (formatted as MB/GB)
+  - Usage percentage with progress bar (0–100%)
+  - Used / Total bytes with "(Max)" label (formatted as MB/GB) showing max allocated memory
   - Free / Available / Buffers / Cached breakdown (when detailed metrics enabled)
   - Swap usage (when available)
-  - Mini sparkline chart from history array
+  - Mini sparkline chart scaled from 0% to 100% of allocated memory
 
 #### `NetworkMetricsCard`
 - **Input**: `network: NetworkMetrics`
@@ -87,12 +153,6 @@ The main container view for the monitoring tab. Contains all metric cards arrang
   - Read/Write operation rates (ops/s)
   - Cumulative read/written bytes
 
-#### `GPUMetricsCard`
-- **Input**: `gpu: GPUMetrics`
-- **Displays**:
-  - "GPU monitoring not available" when `!gpu.isAvailable`
-  - Utilization percentage, memory usage, temperature, and power when available
-
 #### `SnapshotQualityBadge`
 - **Input**: `quality: SnapshotQuality`
 - **Displays**:
@@ -101,8 +161,8 @@ The main container view for the monitoring tab. Contains all metric cards arrang
   - Red "Failed" badge with reason for `.failed(reason:)`
 
 #### `SparklineView`
-- **Input**: `data: [Double]`, `lineColor: Color`, `height: CGFloat`
-- **Behavior**: Draws a mini line chart using `Path` from the rolling data array
+- **Input**: `data: [Double]`, `lineColor: Color`, `height: CGFloat`, `maxValue: Double?` (optional)
+- **Behavior**: Draws a mini line chart using `Path` from the rolling data array. When `maxValue` is provided, the Y-axis is fixed from 0 to `maxValue` so the graph shows usage relative to the allocated maximum (e.g., 0–200% for 2 CPU cores, 0–100% for memory). When `maxValue` is `nil`, falls back to auto-scaling based on the data range.
 - **Layout**: Fixed height, fills available width
 
 #### Helper: `MetricProgressBar`
@@ -218,7 +278,25 @@ All metric cards follow the existing app design language:
 | Network total | Bytes → MB/GB | `45.6 MB` |
 | Disk throughput | Bytes/s → KB/s or MB/s | `850.0 KB/s` |
 | Disk ops | Ops/s | `120 ops/s` |
-| GPU utilization | Percent | `72.5%` |
-| GPU memory | Bytes → MB/GB | `1.5 GB / 8.0 GB` |
-| Temperature | Celsius | `65.0 °C` |
-| Power | Watts | `150.0 W` |
+
+---
+
+## Max Allocation & Graph Scaling
+
+Each resource card displays the **maximum allocated value** for the container, and sparkline graphs are scaled from **0 to the max allocated** rather than auto-scaling to the current data range. The max allocation values now come from `activeResourceLimits` (the actual limits used when the container was started) rather than the hardcoded `PodConfiguration.default`.
+
+### Per-Resource Max Allocation
+
+| Resource | Max Allocated | Source | Graph Y-Axis |
+|---|---|---|---|
+| CPU | `coreCount × 100%` (e.g., 200% for 2 cores) | `CPUMetrics.coreCount` from `activeResourceLimits.cpuCores` | 0 – coreCount × 100% |
+| Memory | `totalBytes` (e.g., 512 MB) | `MemoryMetrics.totalBytes` from `activeResourceLimits.memoryBytes` | 0% – 100% of allocated |
+| Network | N/A (rate-based, no fixed cap) | — | Auto-scaled to data range |
+| Disk I/O | N/A (rate-based, no fixed cap) | — | No sparkline |
+
+### Graph Scaling Behavior
+
+The `SparklineView` accepts an optional `maxValue` parameter:
+- **When provided** (CPU, Memory): The Y-axis is fixed from 0 to `maxValue`. Low usage appears as a small line near the bottom of the graph, making it easy to judge utilization relative to capacity.
+- **When omitted** (Network): The Y-axis auto-scales to `data.max()`, which is appropriate for rate-based metrics where there is no predefined ceiling.
+

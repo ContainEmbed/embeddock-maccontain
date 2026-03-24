@@ -78,7 +78,7 @@ final class NodeServerCoordinator {
     ///   - imageName: OCI image reference to pull (e.g. "docker.io/library/node:20").
     ///   - port: Port the Node.js server listens on.
     /// - Returns: The started LinuxPod instance.
-    func start(jsFile: URL, imageName: String, port: Int) async throws -> LinuxPod {
+    func start(jsFile: URL, imageName: String, port: Int, podConfig: PodConfiguration = .default) async throws -> LinuxPod {
         let startTime = ContinuousClock.now
         logger.info("[NodeServerCoordinator] Starting Node.js server from: \(imageName)")
         let platform = Platform(arch: "arm64", os: "linux", variant: "v8")
@@ -93,7 +93,7 @@ final class NodeServerCoordinator {
         async let imageTrackResult = performNodeImageTrack(
             imageName: imageName, platform: platform
         )
-        async let vmTrackResult = performVMTrack()
+        async let vmTrackResult = performVMTrack(podConfig: podConfig)
 
         // Await VM track first. If it succeeds and image track later fails,
         // we must clean up the orphaned pod.
@@ -178,12 +178,12 @@ final class NodeServerCoordinator {
     }
 
     /// VM Track: Prepare init filesystem, then create pod with kernel and VMM.
-    private func performVMTrack() async throws -> LinuxPod {
+    private func performVMTrack(podConfig: PodConfiguration) async throws -> LinuxPod {
         let trackStart = ContinuousClock.now
 
         let initfs = try await podFactory.prepareInitFilesystem()
         let podID = "nodejs-server-\(UUID().uuidString.prefix(8))"
-        let pod = try await podFactory.createPod(podID: podID, initfs: initfs)
+        let pod = try await podFactory.createPod(podID: podID, initfs: initfs, config: podConfig)
 
         logger.info("[NodeServerCoordinator:VMTrack] Completed in \(ContinuousClock.now - trackStart)")
         return pod
