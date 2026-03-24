@@ -42,6 +42,15 @@ final class ContainerViewModel: ObservableObject {
     @Published private(set) var lastDiagnosticReport: DiagnosticReport?
     @Published private(set) var activeChannels: [CommunicationType] = []
 
+    // MARK: - Resource Monitoring State
+
+    @Published private(set) var latestSnapshot: ResourceSnapshot?
+    @Published private(set) var isMonitoringResources: Bool = false
+    @Published private(set) var cpuHistory: [Double] = []
+    @Published private(set) var memoryHistory: [Double] = []
+    @Published private(set) var networkRxHistory: [Double] = []
+    @Published private(set) var networkTxHistory: [Double] = []
+
     // MARK: - UI State
 
     @Published var showSettings = false
@@ -392,6 +401,16 @@ extension ContainerViewModel: ContainerEngineDelegate {
         } else {
             activeChannels = []
         }
+
+        // Clear resource monitoring state when container is no longer active
+        if !engine.status.isActive {
+            latestSnapshot = nil
+            isMonitoringResources = false
+            cpuHistory = []
+            memoryHistory = []
+            networkRxHistory = []
+            networkTxHistory = []
+        }
     }
 
     func engine(_ engine: any ContainerEngine, didUpdateProgress message: String) {
@@ -400,5 +419,24 @@ extension ContainerViewModel: ContainerEngineDelegate {
 
     func engine(_ engine: any ContainerEngine, didProduceDiagnosticReport report: DiagnosticReport) {
         lastDiagnosticReport = report
+    }
+
+    func engine(_ engine: any ContainerEngine, didUpdateResourceSnapshot snapshot: ResourceSnapshot) {
+        latestSnapshot = snapshot
+        isMonitoringResources = engine.isMonitoringResources
+
+        appendToHistory(&cpuHistory, value: snapshot.cpu.usagePercent, maxCount: 60)
+        appendToHistory(&memoryHistory, value: snapshot.memory.usagePercent, maxCount: 60)
+        appendToHistory(&networkRxHistory, value: snapshot.network.totalRxBytesPerSec, maxCount: 60)
+        appendToHistory(&networkTxHistory, value: snapshot.network.totalTxBytesPerSec, maxCount: 60)
+    }
+
+    // MARK: - Private Helpers
+
+    private func appendToHistory(_ history: inout [Double], value: Double, maxCount: Int) {
+        history.append(value)
+        if history.count > maxCount {
+            history.removeFirst(history.count - maxCount)
+        }
     }
 }

@@ -25,4 +25,15 @@ public protocol ContainerEngineDelegate: AnyObject {
 
     /// Called when a diagnostic report is produced after a failure.
     func engine(_ engine: any ContainerEngine, didProduceDiagnosticReport report: DiagnosticReport)
+
+    /// Called on each resource monitoring collection cycle with the latest snapshot.
+    func engine(_ engine: any ContainerEngine, didUpdateResourceSnapshot snapshot: ResourceSnapshot)
+}
+
+// MARK: - Default Implementations
+
+public extension ContainerEngineDelegate {
+
+    /// Default no-op so existing delegates are not broken.
+    func engine(_ engine: any ContainerEngine, didUpdateResourceSnapshot snapshot: ResourceSnapshot) {}
 }

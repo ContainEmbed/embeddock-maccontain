@@ -24,6 +24,7 @@ public protocol ContainerEngine:
     ContainerNetworking,
     ContainerImageManaging,
     ContainerDiagnosing,
+    ContainerResourceMonitoring,
     AnyObject
 {
     /// Delegate for state-change callbacks.

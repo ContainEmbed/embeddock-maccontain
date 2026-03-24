@@ -48,6 +48,8 @@ struct ContentView: View {
                             TerminalSection(viewModel: viewModel)
                         case 2:
                             FilesSection(viewModel: viewModel)
+                        case 3:
+                            ResourceMonitoringSection(viewModel: viewModel)
                         default:
                             ControlSection(viewModel: viewModel)
                         }
@@ -103,6 +105,7 @@ struct ContentView: View {
             Text("Control").tag(0)
             Text("Terminal").tag(1)
             Text("Files").tag(2)
+            Text("Resources").tag(3)
         }
         .pickerStyle(.segmented)
         .padding(.horizontal, 40)

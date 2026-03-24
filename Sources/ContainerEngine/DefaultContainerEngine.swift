@@ -58,6 +58,18 @@ final class DefaultContainerEngine: ContainerEngine {
 
     private var communicationManager: ContainerCommunicationManager?
     private var portForwarder: TcpPortForwarder?
+    private var resourceMonitor: ResourceMonitor?
+
+    // MARK: - ContainerResourceMonitoring — State
+
+    private(set) var isMonitoringResources: Bool = false
+    private(set) var latestResourceSnapshot: ResourceSnapshot?
+    private var _resourceSnapshotStream: AsyncStream<ResourceSnapshot>?
+
+    var resourceSnapshotStream: AsyncStream<ResourceSnapshot>? {
+        guard isMonitoringResources else { return nil }
+        return _resourceSnapshotStream
+    }
 
     // MARK: - Composition Modules
 
@@ -224,6 +236,9 @@ final class DefaultContainerEngine: ContainerEngine {
 
         updateStatus(.stopping)
         reportProgress("Stopping container...")
+
+        // Stop resource monitoring before cleanup
+        await stopResourceMonitoring()
 
         if let coordinator = cleanupCoordinator {
             let completed = await coordinator.performCleanupWithMasterTimeout(
@@ -396,6 +411,68 @@ final class DefaultContainerEngine: ContainerEngine {
         diagnosticsHelper?.printReport(report)
     }
 
+    // MARK: - ContainerResourceMonitoring
+
+    func startResourceMonitoring(
+        configuration: ResourceMonitorConfiguration = .default
+    ) async throws {
+        guard let pod = currentPod else {
+            throw ContainerizationError(.invalidState, message: "No container is running")
+        }
+        guard case .running = status else {
+            throw ContainerizationError(.invalidState, message: "Container is not in running state")
+        }
+
+        // Stop existing monitor if running
+        if let existing = resourceMonitor {
+            await existing.stop()
+        }
+
+        let coreCount = PodConfiguration.default.cpus
+        let totalMemory = PodConfiguration.default.memoryInBytes
+
+        let monitor = ResourceMonitor(
+            pod: pod,
+            coreCount: coreCount,
+            totalMemoryBytes: totalMemory,
+            configuration: configuration,
+            logger: logger
+        )
+
+        // Set up delegate forwarding callback
+        await monitor.setOnSnapshot { [weak self] snapshot in
+            Task { @MainActor in
+                guard let self else { return }
+                self.latestResourceSnapshot = snapshot
+                self.delegate?.engine(self, didUpdateResourceSnapshot: snapshot)
+            }
+        }
+
+        // Get the stream reference before starting
+        self._resourceSnapshotStream = await monitor.snapshots
+
+        self.resourceMonitor = monitor
+        self.isMonitoringResources = true
+
+        await monitor.start()
+        logger.info("[Engine] Resource monitoring started")
+    }
+
+    func stopResourceMonitoring() async {
+        guard let monitor = resourceMonitor else { return }
+        await monitor.stop()
+        resourceMonitor = nil
+        isMonitoringResources = false
+        latestResourceSnapshot = nil
+        _resourceSnapshotStream = nil
+        logger.info("[Engine] Resource monitoring stopped")
+    }
+
+    func resourceSnapshotHistory() async -> [ResourceSnapshot] {
+        guard let monitor = resourceMonitor else { return [] }
+        return await monitor.history()
+    }
+
     // MARK: - Termination Cleanup
 
     /// Perform best-effort cleanup when the app is about to terminate.
@@ -429,6 +506,16 @@ final class DefaultContainerEngine: ContainerEngine {
         containerOperations?.configure(pod: nil, communicationManager: nil, diagnosticsHelper: nil)
         containerURL = nil
         isCommunicationReady = false
+
+        // Clear resource monitoring state (non-async best-effort)
+        if let monitor = resourceMonitor {
+            Task { await monitor.stop() }
+        }
+        resourceMonitor = nil
+        isMonitoringResources = false
+        latestResourceSnapshot = nil
+        _resourceSnapshotStream = nil
+
         updateStatus(.idle)
     }
 
@@ -544,6 +631,11 @@ final class DefaultContainerEngine: ContainerEngine {
 
         if result.portForwarder != nil {
             observePortForwarder()
+        }
+
+        // Auto-start resource monitoring once the container is running
+        Task {
+            try? await self.startResourceMonitoring()
         }
 
         notifyDelegate()
